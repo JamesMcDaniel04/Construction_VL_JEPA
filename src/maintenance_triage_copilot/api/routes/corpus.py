@@ -53,7 +53,7 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Empty file upload")
 
     suffix = Path(filename).suffix.lower()
-    if suffix not in {".pdf", ".txt", ".md", ".rst"}:
+    if suffix not in {".pdf", ".txt", ".md", ".rst", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}:
         raise HTTPException(
             status_code=415,
             detail=f"Unsupported document type: {suffix}. Expected .pdf, .txt, or .md",
@@ -97,6 +97,18 @@ def _parse_bytes(
             title=title,
             body=text,
             equipment_family=equipment_family,
+            tags=tags,
+        )
+
+    if suffix in {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}:
+        from maintenance_triage_copilot.retrieval.document_parser import parse_image_bytes
+
+        return parse_image_bytes(
+            data,
+            document_id=document_id,
+            source_type=source_type,
+            equipment_family=equipment_family,
+            title=title,
             tags=tags,
         )
 

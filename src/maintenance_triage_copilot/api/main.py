@@ -22,6 +22,7 @@ from maintenance_triage_copilot.utils.logging import setup_logging
 
 def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
     cfg = config_path if isinstance(config_path, AppConfig) else load_config(config_path)
+    is_production = cfg.runtime.is_production()
     app = FastAPI(
         title="Maintenance Triage Copilot",
         description="Vision-language maintenance triage API for industrial electrical panels.",
@@ -68,8 +69,14 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
 
     metadata_store: MetadataStore
     if cfg.database.postgres_url:
-        metadata_store = SqlAlchemyMetadataStore(cfg.database.postgres_url)
+        metadata_store = SqlAlchemyMetadataStore(
+            cfg.database.postgres_url,
+            run_schema_migrations=cfg.database.run_migrations_on_startup,
+            required=is_production,
+        )
     else:
+        if is_production:
+            raise RuntimeError("Postgres is required in production mode")
         metadata_store = MemoryMetadataStore()
 
     state = AppState(
@@ -81,6 +88,7 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
         vector_index=VectorIndex(
             qdrant_url=cfg.database.qdrant_url,
             collection_prefix=cfg.database.collection_prefix,
+            required=is_production,
         ),
         metadata_store=metadata_store,
         projector_checkpoint_path=projector_checkpoint,

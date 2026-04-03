@@ -30,8 +30,11 @@ class VectorIndex:
         self,
         qdrant_url: str | None = None,
         collection_prefix: str = "maintenance-triage",
+        *,
+        required: bool = False,
     ):
         self.collection_prefix = collection_prefix
+        self.required = required
         self._store: dict[str, list[dict[str, Any]]] = {}
         self._qdrant = None
         self._qdrant_collections: set[str] = set()
@@ -45,6 +48,8 @@ class VectorIndex:
                     c.name for c in self._qdrant.get_collections().collections
                 }
             except Exception as exc:
+                if self.required:
+                    raise RuntimeError("Qdrant is required but could not be reached") from exc
                 log.warning("qdrant_connection_failed error=%s", exc)
                 self._qdrant = None
 
@@ -66,8 +71,12 @@ class VectorIndex:
                 vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
             )
             self._qdrant_collections.add(name)
-        except Exception:
-            pass
+        except Exception as exc:
+            if self.required:
+                raise RuntimeError(
+                    f"Failed to create required Qdrant collection: {name}"
+                ) from exc
+            log.warning("qdrant_collection_create_failed collection=%s error=%s", name, exc)
 
     def upsert(
         self,
@@ -103,6 +112,8 @@ class VectorIndex:
                     ],
                 )
             except Exception as exc:
+                if self.required:
+                    raise RuntimeError("Qdrant upsert failed in required mode") from exc
                 log.warning("qdrant_upsert_failed namespace=%s error=%s", namespace, exc)
 
     def search(
@@ -121,9 +132,13 @@ class VectorIndex:
                 try:
                     return self._search_qdrant(name, query, limit, equipment_family)
                 except Exception as exc:
+                    if self.required:
+                        raise RuntimeError("Qdrant search failed in required mode") from exc
                     log.warning("qdrant_search_failed namespace=%s error=%s", namespace, exc)
 
         # Fallback to in-memory
+        if self.required:
+            raise RuntimeError("Qdrant is required but search fell back to memory mode")
         return self._search_memory(namespace, query, limit, equipment_family)
 
     def _search_qdrant(
@@ -193,7 +208,11 @@ class VectorIndex:
     def status(self) -> dict[str, str]:
         mode = "qdrant+memory" if self._qdrant is not None else "memory"
         namespaces = ",".join(sorted(self._store.keys())) or "empty"
-        return {"mode": mode, "namespaces": namespaces}
+        return {
+            "mode": mode,
+            "namespaces": namespaces,
+            "required": str(self.required).lower(),
+        }
 
     @staticmethod
     def _normalize(vector: np.ndarray) -> np.ndarray:

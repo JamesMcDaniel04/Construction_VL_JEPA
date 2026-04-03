@@ -17,10 +17,19 @@ class ApiConfig:
 
 
 @dataclass
+class RuntimeConfig:
+    mode: str = "development"
+
+    def is_production(self) -> bool:
+        return self.mode.lower() == "production"
+
+
+@dataclass
 class DatabaseConfig:
     postgres_url: str | None = "postgresql://mtc:mtc@localhost:5432/mtc"
     qdrant_url: str | None = "http://localhost:6333"
     collection_prefix: str = "maintenance-triage"
+    run_migrations_on_startup: bool = True
 
 
 @dataclass
@@ -38,6 +47,13 @@ class TriageConfig:
     state_match_threshold: float = 0.82
     escalation_threshold: float = 0.55
     video_num_frames: int = 8
+
+
+@dataclass
+class PolicyConfig:
+    checkpoint_path: str | None = None
+    require_checkpoint: bool = False
+    top_k_issues: int = 3
 
 
 @dataclass
@@ -86,10 +102,12 @@ class VideoBackboneConfig:
 
 @dataclass
 class AppConfig:
+    runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     api: ApiConfig = field(default_factory=ApiConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     triage: TriageConfig = field(default_factory=TriageConfig)
+    policy: PolicyConfig = field(default_factory=PolicyConfig)
     text_encoder: TextEncoderConfig = field(default_factory=TextEncoderConfig)
     adapter: AdapterConfig = field(default_factory=AdapterConfig)
     image_backbone: ImageBackboneConfig = field(default_factory=ImageBackboneConfig)

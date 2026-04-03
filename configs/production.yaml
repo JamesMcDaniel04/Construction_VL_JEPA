@@ -1,3 +1,6 @@
+runtime:
+  mode: "production"
+
 # Production config — uses vendored Meta JEPA backbone slices and mounted model assets.
 
 api:
@@ -9,6 +12,12 @@ database:
   postgres_url: "postgresql://mtc:mtc@postgres:5432/mtc"
   qdrant_url: "http://qdrant:6333"
   collection_prefix: "maintenance-triage"
+  run_migrations_on_startup: true
+
+policy:
+  checkpoint_path: "/models/triage-policy.json"
+  require_checkpoint: true
+  top_k_issues: 3
 
 text_encoder:
   backend: "sentence-transformer"

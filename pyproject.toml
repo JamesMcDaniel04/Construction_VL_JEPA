@@ -11,6 +11,7 @@ requires-python = ">=3.11"
 license = {text = "MIT"}
 
 dependencies = [
+    "alembic>=1.13.0",
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "pydantic>=2.8.0",
@@ -23,6 +24,7 @@ dependencies = [
     "sqlalchemy>=2.0.0",
     "python-multipart>=0.0.9",
     "Pillow>=10.0.0",
+    "pytesseract>=0.3.10",
 ]
 
 [project.optional-dependencies]
@@ -48,6 +50,7 @@ pdf = [
 
 [project.scripts]
 mtc-api = "maintenance_triage_copilot.api.main:run"
+mtc-db-upgrade = "maintenance_triage_copilot.storage.migrations:main"
 mtc-train-adapter = "maintenance_triage_copilot.training.train_adapter:main"
 
 [tool.setuptools.packages.find]

@@ -1,3 +1,6 @@
+runtime:
+  mode: "development"
+
 api:
   host: "0.0.0.0"
   port: 8000
@@ -7,6 +10,7 @@ database:
   postgres_url: "postgresql://mtc:mtc@localhost:5432/mtc"
   qdrant_url: "http://localhost:6333"
   collection_prefix: "maintenance-triage"
+  run_migrations_on_startup: true
 
 retrieval:
   top_k_documents: 5
@@ -20,6 +24,11 @@ triage:
   state_match_threshold: 0.82
   escalation_threshold: 0.55
   video_num_frames: 8
+
+policy:
+  checkpoint_path: null
+  require_checkpoint: false
+  top_k_issues: 3
 
 text_encoder:
   backend: "sentence-transformer"

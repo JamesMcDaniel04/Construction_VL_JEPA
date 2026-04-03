@@ -13,6 +13,7 @@ from maintenance_triage_copilot.domain.models import (
     ReferenceState,
     TriageResponse,
 )
+from maintenance_triage_copilot.storage.migrations import run_migrations
 
 
 class Base(DeclarativeBase):
@@ -51,13 +52,24 @@ class TriageHistoryRecord(Base):
 class SqlAlchemyMetadataStore:
     """Persists metadata and triage history to a SQL database."""
 
-    def __init__(self, database_url: str):
+    def __init__(
+        self,
+        database_url: str,
+        *,
+        run_schema_migrations: bool = True,
+        required: bool = False,
+    ):
+        if run_schema_migrations:
+            run_migrations(database_url)
+
         engine_kwargs: dict[str, Any] = {"future": True}
         if database_url.startswith("sqlite"):
             engine_kwargs["connect_args"] = {"check_same_thread": False}
         self.engine = create_engine(database_url, **engine_kwargs)
         self.session_factory = sessionmaker(self.engine, expire_on_commit=False, class_=Session)
-        Base.metadata.create_all(self.engine)
+        if required:
+            with self.engine.connect() as connection:
+                connection.execute(select(1))
 
     def add_document(self, document: CorpusDocument) -> None:
         payload = document.model_dump(mode="json")
