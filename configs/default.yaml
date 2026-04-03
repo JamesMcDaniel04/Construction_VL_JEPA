@@ -1,68 +1,47 @@
-# Pre-Failure Intelligence Layer — Default Configuration
-
-model:
-  latent_dim: 256
-  context_window: 1800        # seconds (30 min)
-  target_window: 600          # seconds (10 min)
-  predictor_depth: 6
-  encoder_depth: 12
-  n_heads: 8
-  dropout: 0.1
-  masking_ratio: 0.75
-
-training:
-  batch_size: 64
-  learning_rate: 1.5e-4
-  weight_decay: 0.05
-  warmup_epochs: 10
-  total_epochs: 300
-  ema_decay_start: 0.996
-  ema_decay_end: 0.999
-  gradient_clip: 1.0
-  accumulate_grad_batches: 1
-  precision: "16-mixed"
-
-data:
-  sensor_patch_size: 60       # seconds per patch
-  max_sensors: 64
-  normalization: "per_sensor_zscore"
-  train_split: "normal_periods_only"
-  val_fraction: 0.1
-  failure_exclusion_hours: 6  # exclude windows within N hours of known failure
-
-inference:
-  scoring_interval_seconds: 60        # seconds between anomaly scores
-  score_metric: "latent_l2"           # raw anomaly score before calibration
-  severity_normalization: "per_machine_percentile"
-  threshold_k: 3.5            # sigma multiplier for anomaly threshold
-  trend_window_hours: 72      # human-readable trend window; converted to points at runtime
-  trend_slope_threshold: 0.01
-  alert_cooldown_seconds: 3600        # seconds before re-alerting same machine
-  pattern_match_top_k: 5
-  pattern_similarity_threshold: 0.80
-
-database:
-  timescale_url: "postgresql://pfil:pfil@localhost:5432/pfil"
-  qdrant_url: "http://localhost:6333"
-  qdrant_collection: "latent_states"
-
-kafka:
-  bootstrap_servers: "localhost:9092"
-  sensor_topic: "sensor-readings"
-  anomaly_topic: "anomaly-scores"
-  consumer_group: "pfil-inference"
-
 api:
   host: "0.0.0.0"
   port: 8000
   cors_origins: ["*"]
 
-alerts:
-  webhook_url: null
-  email_to: null
-  slack_webhook: null
-  pagerduty_key: null
+database:
+  postgres_url: "postgresql://mtc:mtc@localhost:5432/mtc"
+  qdrant_url: null
+  collection_prefix: "maintenance-triage"
 
-mlflow:
-  tracking_uri: "http://localhost:5000"
-  experiment_name: "pfil-jepa"
+retrieval:
+  top_k_documents: 5
+  top_k_incidents: 3
+  top_k_states: 3
+  chunk_size: 320
+  chunk_overlap: 40
+
+triage:
+  top_k_steps: 3
+  state_match_threshold: 0.82
+  escalation_threshold: 0.55
+  video_num_frames: 8
+
+text_encoder:
+  backend: "sentence-transformer"
+  model_name: "sentence-transformers/all-MiniLM-L6-v2"
+  embedding_dim: 384
+
+adapter:
+  hidden_dim: 384
+  output_dim: 384
+
+image_backbone:
+  input_size: 64
+  patch_size: 8
+  embed_dim: 192
+  depth: 4
+  num_heads: 3
+
+video_backbone:
+  input_size: 64
+  patch_size: 8
+  num_frames: 8
+  tubelet_size: 2
+  embed_dim: 192
+  depth: 4
+  num_heads: 3

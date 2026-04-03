@@ -1,94 +1,56 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends._legacy:_Backend"
+build-backend = "setuptools.build_meta"
 
 [project]
-name = "construction-vl-jepa"
+name = "maintenance-triage-copilot"
 version = "0.1.0"
-description = "Pre-Failure Intelligence Layer — VL-JEPA for industrial predictive maintenance"
+description = "Vision-language maintenance triage copilot for industrial electrical panels"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = {text = "MIT"}
 
 dependencies = [
-    # Core ML
-    "torch>=2.1.0",
-    "pytorch-lightning>=2.1.0",
-    "einops>=0.7.0",
-    "timm>=0.9.0",
-    "sentence-transformers>=2.2.0",
-
-    # Data
-    "numpy>=1.24.0",
-    "pandas>=2.0.0",
-    "pyarrow>=14.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "pydantic>=2.8.0",
+    "pydantic-settings>=2.4.0",
+    "pyyaml>=6.0.0",
+    "numpy>=1.26.0",
+    "torch>=2.3.0",
+    "sentence-transformers>=3.0.0",
+    "qdrant-client>=1.10.0",
     "sqlalchemy>=2.0.0",
-    "psycopg2-binary>=2.9.0",
-    "qdrant-client>=1.7.0",
-
-    # Streaming
-    "confluent-kafka>=2.3.0",
-    "bytewax>=0.18.0",
-
-    # Feature Store
-    "feast>=0.34.0",
-
-    # API
-    "fastapi>=0.104.0",
-    "uvicorn[standard]>=0.24.0",
-    "pydantic>=2.5.0",
-    "pydantic-settings>=2.1.0",
-    "httpx>=0.25.0",
-    "websockets>=12.0",
-
-    # Monitoring & Logging
-    "prometheus-client>=0.19.0",
-    "structlog>=23.2.0",
-
-    # Config
-    "pyyaml>=6.0",
-    "hydra-core>=1.3.0",
-
-    # Experiment Tracking
-    "mlflow>=2.9.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.4.0",
-    "pytest-asyncio>=0.21.0",
-    "pytest-cov>=4.1.0",
-    "ruff>=0.1.0",
-    "mypy>=1.7.0",
-    "pre-commit>=3.6.0",
-]
-
-video = [
-    "opencv-python>=4.8.0",
-    "decord>=0.6.0",
+    "httpx>=0.27.0",
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.5.0",
+    "mypy>=1.10.0",
 ]
 
 [project.scripts]
-pfil-train = "construction_vl_jepa.training.train:main"
-pfil-infer = "construction_vl_jepa.inference.server:main"
-pfil-api = "construction_vl_jepa.api.main:run"
-pfil-ingest = "construction_vl_jepa.ingestion.runner:main"
+mtc-api = "maintenance_triage_copilot.api.main:run"
+mtc-train-adapter = "maintenance_triage_copilot.training.train_adapter:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
-select = ["E", "F", "W", "I", "N", "UP"]
+select = ["E", "F", "I", "UP", "B", "N"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
