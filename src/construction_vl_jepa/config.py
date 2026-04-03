@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -46,13 +47,23 @@ class DataConfig:
 
 @dataclass
 class InferenceConfig:
-    scoring_interval: int = 60
+    scoring_interval_seconds: int = 60
+    score_metric: str = "latent_l2"
+    severity_normalization: str = "per_machine_percentile"
     threshold_k: float = 3.5
-    trend_window: int = 72
+    trend_window_hours: int = 72
     trend_slope_threshold: float = 0.01
-    alert_cooldown: int = 3600
+    alert_cooldown_seconds: int = 3600
     pattern_match_top_k: int = 5
     pattern_similarity_threshold: float = 0.80
+
+    @property
+    def trend_window_points(self) -> int:
+        """Convert the human-friendly trend window to the number of scoring intervals."""
+        return max(
+            1,
+            math.ceil((self.trend_window_hours * 3600) / self.scoring_interval_seconds),
+        )
 
 
 @dataclass

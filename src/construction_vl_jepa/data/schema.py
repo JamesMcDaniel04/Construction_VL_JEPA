@@ -76,17 +76,27 @@ class MaintenanceEvent(BaseModel):
 
 
 class AnomalyScore(BaseModel):
+    """`score` is the raw anomaly metric; `severity` is the calibrated 0-1 alerting signal."""
+
     machine_id: str
     timestamp: datetime
-    score: float = Field(ge=0.0, le=1.0)
+    window_start: datetime | None = None
+    window_end: datetime | None = None
+    score: float = Field(ge=0.0)
+    severity: float | None = Field(default=None, ge=0.0, le=1.0)
+    threshold: float | None = Field(default=None, ge=0.0)
+    trend: str | None = None
     contributing_signals: list[dict] = Field(default_factory=list)
     matched_pattern_ids: list[str] = Field(default_factory=list)
+    model_version: str | None = None
 
 
 class AlertPayload(BaseModel):
     machine_id: str
     anomaly_id: str
     score: float
+    severity: float | None = Field(default=None, ge=0.0, le=1.0)
+    threshold: float | None = Field(default=None, ge=0.0)
     trend: str | None = None
     contributing_signals: list[dict] = Field(default_factory=list)
     matched_patterns: list[dict] = Field(default_factory=list)
@@ -97,6 +107,7 @@ class AlertPayload(BaseModel):
 class MachineHealth(BaseModel):
     machine_id: str
     current_score: float
+    current_severity: float | None = Field(default=None, ge=0.0, le=1.0)
     trend: str
     last_updated: datetime
     status: str  # green / yellow / red
@@ -158,8 +169,14 @@ class AnomalyScoreORM(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     machine_id = Column(String, ForeignKey("machines.machine_id"), nullable=False, index=True)
     timestamp = Column(DateTime, nullable=False, index=True)
+    window_start = Column(DateTime, nullable=True)
+    window_end = Column(DateTime, nullable=True)
     score = Column(Float, nullable=False)
+    severity = Column(Float, nullable=True)
+    threshold = Column(Float, nullable=True)
+    trend = Column(String, nullable=True)
     contributing_signals = Column(JSONB, default=list)
     matched_pattern_ids = Column(JSONB, default=list)
+    model_version = Column(String, nullable=True)
 
     machine = relationship("MachineORM", back_populates="anomaly_scores")

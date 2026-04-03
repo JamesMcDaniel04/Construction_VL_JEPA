@@ -1,8 +1,8 @@
 """Pattern matching via vector similarity search.
 
 Stores latent embeddings in Qdrant and queries for similar historical states.
-This is what turns "anomaly score: 0.83" into "this looks like the bearing failure
-on Machine 17 from 12 days before it failed."
+Only labeled failure patterns are returned by default so the system does not
+confuse "similar operating regime" with "similar pre-failure trajectory."
 """
 
 from __future__ import annotations
@@ -115,6 +115,7 @@ class PatternMatcher:
         embedding: np.ndarray,
         top_k: int | None = None,
         score_threshold: float | None = None,
+        failure_patterns_only: bool = True,
     ) -> list[PatternMatch]:
         """Find historical latent states similar to the given embedding.
 
@@ -122,6 +123,7 @@ class PatternMatcher:
             embedding: Query vector (latent_dim,).
             top_k: Number of results to return.
             score_threshold: Minimum similarity score.
+            failure_patterns_only: Restrict matches to labeled pre-failure patterns.
 
         Returns:
             List of PatternMatch results, sorted by similarity descending.
@@ -130,11 +132,24 @@ class PatternMatcher:
         threshold = score_threshold or self.cfg.pattern_similarity_threshold
 
         if self.client is not None:
+            query_filter = None
+            if failure_patterns_only:
+                from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+                query_filter = Filter(
+                    must=[
+                        FieldCondition(
+                            key="is_failure_pattern",
+                            match=MatchValue(value=True),
+                        )
+                    ]
+                )
             results = self.client.search(
                 collection_name=self.collection,
                 query_vector=embedding.tolist(),
                 limit=top_k,
                 score_threshold=threshold,
+                query_filter=query_filter,
             )
             return [
                 PatternMatch(
@@ -150,10 +165,19 @@ class PatternMatcher:
                 for r in results
             ]
         else:
-            return self._memory_search(embedding, top_k, threshold)
+            return self._memory_search(
+                embedding,
+                top_k,
+                threshold,
+                failure_patterns_only=failure_patterns_only,
+            )
 
     def _memory_search(
-        self, embedding: np.ndarray, top_k: int, threshold: float
+        self,
+        embedding: np.ndarray,
+        top_k: int,
+        threshold: float,
+        failure_patterns_only: bool,
     ) -> list[PatternMatch]:
         """Fallback in-memory cosine similarity search."""
         if not self._memory_store:
@@ -162,6 +186,8 @@ class PatternMatcher:
         query_norm = embedding / (np.linalg.norm(embedding) + 1e-8)
         scored = []
         for item in self._memory_store:
+            if failure_patterns_only and not item["payload"].get("is_failure_pattern", False):
+                continue
             vec = item["vector"]
             vec_norm = vec / (np.linalg.norm(vec) + 1e-8)
             sim = float(np.dot(query_norm, vec_norm))

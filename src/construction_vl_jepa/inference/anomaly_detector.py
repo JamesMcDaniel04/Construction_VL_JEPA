@@ -43,6 +43,7 @@ class AnomalyResult:
     machine_id: str
     score: float
     normalized_score: float  # (score - μ) / σ
+    threshold: float
     is_anomaly: bool
     is_trend_anomaly: bool
     contributing_signals: list[dict]
@@ -63,7 +64,7 @@ class AnomalyDetector:
 
         # Recent scores for trend detection
         self.recent_scores: dict[str, deque] = defaultdict(
-            lambda: deque(maxlen=cfg.trend_window)
+            lambda: deque(maxlen=cfg.trend_window_points)
         )
 
     def score_window(
@@ -101,6 +102,7 @@ class AnomalyDetector:
         self.recent_scores[machine_id].append(raw_score)
 
         # Threshold check
+        threshold = baseline.mean + (self.cfg.threshold_k * baseline.std)
         is_anomaly = normalized > self.cfg.threshold_k
 
         # Trend check: sustained upward drift
@@ -114,7 +116,7 @@ class AnomalyDetector:
 
         # Alert cooldown
         now = time.time()
-        if is_anomaly and (now - baseline.last_alert_time) < self.cfg.alert_cooldown:
+        if is_anomaly and (now - baseline.last_alert_time) < self.cfg.alert_cooldown_seconds:
             # Suppress unless score is escalating
             if normalized <= self.cfg.threshold_k * 1.5:
                 is_anomaly = False
@@ -126,6 +128,7 @@ class AnomalyDetector:
             machine_id=machine_id,
             score=raw_score,
             normalized_score=normalized,
+            threshold=threshold,
             is_anomaly=is_anomaly or is_trend,
             is_trend_anomaly=is_trend,
             contributing_signals=contributing,
@@ -135,7 +138,7 @@ class AnomalyDetector:
     def _check_trend(self, machine_id: str) -> bool:
         """Check for sustained upward drift in recent scores."""
         scores = list(self.recent_scores[machine_id])
-        if len(scores) < self.cfg.trend_window // 2:
+        if len(scores) < self.cfg.trend_window_points // 2:
             return False
 
         arr = np.array(scores)
@@ -201,6 +204,7 @@ class AnomalyDetector:
             "status": status,
             "score": current,
             "normalized_score": normalized,
+            "threshold": baseline.mean + (self.cfg.threshold_k * baseline.std),
             "trend": trend,
             "baseline_mean": baseline.mean,
             "baseline_std": baseline.std,

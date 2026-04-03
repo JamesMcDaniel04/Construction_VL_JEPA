@@ -112,6 +112,7 @@ class InferenceServer:
             "machine_id": machine_id,
             "anomaly_score": anomaly_result.score,
             "normalized_score": anomaly_result.normalized_score,
+            "threshold": anomaly_result.threshold,
             "is_anomaly": anomaly_result.is_anomaly,
             "is_trend_anomaly": anomaly_result.is_trend_anomaly,
             "contributing_signals": anomaly_result.contributing_signals,

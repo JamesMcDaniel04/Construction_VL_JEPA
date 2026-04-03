@@ -18,6 +18,21 @@ class AlertRouter:
     def __init__(self, cfg: AlertConfig):
         self.cfg = cfg
 
+    def _severity_context(self, alert: AlertPayload) -> tuple[str, str]:
+        """Map raw score information to alert-routing severity labels."""
+        if alert.severity is not None:
+            severity_value = alert.severity
+        elif alert.threshold and alert.threshold > 0:
+            severity_value = min(alert.score / alert.threshold, 2.0) / 2.0
+        else:
+            severity_value = 0.5
+
+        if severity_value >= 0.9:
+            return "critical", "[CRITICAL]"
+        if severity_value >= 0.6:
+            return "warning", "[WARNING]"
+        return "info", "[INFO]"
+
     async def send_alert(self, alert: AlertPayload) -> dict[str, bool]:
         """Send an alert to all configured destinations.
 
@@ -66,7 +81,7 @@ class AlertRouter:
             import httpx
 
             # Format Slack message
-            severity = "🔴" if alert.score > 0.8 else "🟡"
+            pagerduty_severity, severity_label = self._severity_context(alert)
             signals = ", ".join(
                 s.get("sensor", f"token_{s.get('token_index', '?')}")
                 for s in alert.contributing_signals[:3]
@@ -80,8 +95,11 @@ class AlertRouter:
                 )
 
             text = (
-                f"{severity} *Anomaly Alert — {alert.machine_id}*\n"
-                f"Score: {alert.score:.3f} | Trend: {alert.trend or 'N/A'}\n"
+                f"{severity_label} *Anomaly Alert — {alert.machine_id}*\n"
+                f"Score: {alert.score:.3f}"
+                f"{f' | Threshold: {alert.threshold:.3f}' if alert.threshold is not None else ''}"
+                f" | Trend: {alert.trend or 'N/A'}"
+                f" | PagerDuty severity: {pagerduty_severity}\n"
                 f"Top signals: {signals}"
                 f"{pattern_text}"
             )
@@ -111,12 +129,13 @@ class AlertRouter:
         try:
             import httpx
 
+            pagerduty_severity, _ = self._severity_context(alert)
             event = {
                 "routing_key": self.cfg.pagerduty_key,
                 "event_action": "trigger",
                 "payload": {
                     "summary": f"Anomaly on {alert.machine_id}: score {alert.score:.3f}",
-                    "severity": "critical" if alert.score > 0.9 else "warning",
+                    "severity": pagerduty_severity,
                     "source": alert.machine_id,
                     "custom_details": alert.model_dump(),
                 },
