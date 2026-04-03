@@ -1,0 +1,66 @@
+# Pre-Failure Intelligence Layer — Default Configuration
+
+model:
+  latent_dim: 256
+  context_window: 1800        # seconds (30 min)
+  target_window: 600          # seconds (10 min)
+  predictor_depth: 6
+  encoder_depth: 12
+  n_heads: 8
+  dropout: 0.1
+  masking_ratio: 0.75
+
+training:
+  batch_size: 64
+  learning_rate: 1.5e-4
+  weight_decay: 0.05
+  warmup_epochs: 10
+  total_epochs: 300
+  ema_decay_start: 0.996
+  ema_decay_end: 0.999
+  gradient_clip: 1.0
+  accumulate_grad_batches: 1
+  precision: "16-mixed"
+
+data:
+  sensor_patch_size: 60       # seconds per patch
+  max_sensors: 64
+  normalization: "per_sensor_zscore"
+  train_split: "normal_periods_only"
+  val_fraction: 0.1
+  failure_exclusion_hours: 6  # exclude windows within N hours of known failure
+
+inference:
+  scoring_interval: 60        # seconds between anomaly scores
+  threshold_k: 3.5            # sigma multiplier for anomaly threshold
+  trend_window: 72            # windows to check for sustained drift
+  trend_slope_threshold: 0.01
+  alert_cooldown: 3600        # seconds before re-alerting same machine
+  pattern_match_top_k: 5
+  pattern_similarity_threshold: 0.80
+
+database:
+  timescale_url: "postgresql://pfil:pfil@localhost:5432/pfil"
+  qdrant_url: "http://localhost:6333"
+  qdrant_collection: "latent_states"
+
+kafka:
+  bootstrap_servers: "localhost:9092"
+  sensor_topic: "sensor-readings"
+  anomaly_topic: "anomaly-scores"
+  consumer_group: "pfil-inference"
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+  cors_origins: ["*"]
+
+alerts:
+  webhook_url: null
+  email_to: null
+  slack_webhook: null
+  pagerduty_key: null
+
+mlflow:
+  tracking_uri: "http://localhost:5000"
+  experiment_name: "pfil-jepa"
