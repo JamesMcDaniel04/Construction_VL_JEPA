@@ -21,6 +21,8 @@ dependencies = [
     "sentence-transformers>=3.0.0",
     "qdrant-client>=1.10.0",
     "sqlalchemy>=2.0.0",
+    "python-multipart>=0.0.9",
+    "Pillow>=10.0.0",
 ]
 
 [project.optional-dependencies]
@@ -30,6 +32,18 @@ dev = [
     "pytest-asyncio>=0.23.0",
     "ruff>=0.5.0",
     "mypy>=1.10.0",
+]
+timm = [
+    "timm>=0.9.0",
+    "torchvision>=0.18.0",
+]
+video = [
+    "decord>=0.6.0",
+    "opencv-python>=4.8.0",
+]
+pdf = [
+    "PyMuPDF>=1.23.0",
+    "pdfplumber>=0.10.0",
 ]
 
 [project.scripts]
@@ -54,3 +68,16 @@ asyncio_mode = "auto"
 python_version = "3.11"
 warn_return_any = true
 warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = [
+    "PIL",
+    "PIL.*",
+    "cv2",
+    "decord",
+    "fitz",
+    "pdfplumber",
+    "timm",
+    "torchvision.*",
+]
+ignore_missing_imports = true

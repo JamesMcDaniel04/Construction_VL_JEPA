@@ -5,7 +5,7 @@ The repo now targets a maintenance triage copilot for electrical panels.
 ## Core Flow
 
 1. Ingest manuals, SOPs, and prior incidents into a vector-backed retrieval layer.
-2. Encode panel photos with the vendored I-JEPA backbone and short clips with the vendored V-JEPA backbone.
+2. Encode panel photos with vendored Meta I-JEPA slices and short clips with vendored Meta V-JEPA slices.
 3. Compare observations against curated reference states for panel-state assessment.
 4. Fuse technician question text at retrieval time and return grounded issue candidates, next steps, similar incidents, and escalation guidance.
 
@@ -20,3 +20,8 @@ The repo now targets a maintenance triage copilot for electrical panels.
 - Video backbone source: `facebookresearch/jepa` commit `51c59d518fc63c08464af6de585f78ac0c7ed4d5`
 
 Only the minimal model slices needed for frozen feature extraction are vendored.
+
+## Supported Training
+
+- Supported training entrypoint: `mtc-train-adapter`
+- Unsupported in this repo: removed third-party JEPA pretraining code and self-supervised JEPA pretraining flows

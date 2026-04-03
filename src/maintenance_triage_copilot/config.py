@@ -53,10 +53,15 @@ class TextEncoderConfig:
 class AdapterConfig:
     hidden_dim: int = 384
     output_dim: int = 384
+    checkpoint_path: str | None = None
 
 
 @dataclass
 class ImageBackboneConfig:
+    use_timm: bool = False
+    timm_model_name: str = "vit_tiny_patch16_224"
+    timm_pretrained: bool = True
+    checkpoint_path: str | None = None
     input_size: int = 64
     patch_size: int = 8
     embed_dim: int = 192
@@ -66,6 +71,10 @@ class ImageBackboneConfig:
 
 @dataclass
 class VideoBackboneConfig:
+    use_timm: bool = False
+    timm_model_name: str = "vit_tiny_patch16_224"
+    timm_pretrained: bool = True
+    checkpoint_path: str | None = None
     input_size: int = 64
     patch_size: int = 8
     num_frames: int = 8

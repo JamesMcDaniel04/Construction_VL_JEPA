@@ -72,14 +72,24 @@ class TensorPayloadMixin(BaseModel):
 
     @model_validator(mode="after")
     def _ensure_payload(self) -> TensorPayloadMixin:
-        if self.media_uri is None and (self.tensor_shape is None or self.tensor_values is None):
-            raise ValueError("Either media_uri or tensor_shape + tensor_values must be provided")
+        has_tensor_shape = self.tensor_shape is not None
+        has_tensor_values = self.tensor_values is not None
+        if has_tensor_shape != has_tensor_values:
+            raise ValueError("tensor_shape and tensor_values must be provided together")
+        if self.media_uri is not None and has_tensor_shape:
+            raise ValueError("Provide either media_uri or tensor_shape + tensor_values, not both")
         return self
+
+    def has_raw_payload(self) -> bool:
+        return self.media_uri is not None or self.tensor_shape is not None
 
     def load_tensor(self) -> torch.Tensor:
         if self.tensor_shape and self.tensor_values is not None:
             array = np.asarray(self.tensor_values, dtype=np.float32).reshape(self.tensor_shape)
             return torch.from_numpy(array)
+
+        if self.media_uri is None:
+            raise ValueError("No raw tensor payload available")
 
         assert self.media_uri is not None
         path = Path(self.media_uri)
@@ -105,6 +115,12 @@ class ReferenceState(TensorPayloadMixin):
     caption: str
     metadata: dict[str, str | int | float | bool] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _ensure_reference_payload(self) -> ReferenceState:
+        if not self.has_raw_payload():
+            raise ValueError("ReferenceState requires media_uri or tensor_shape + tensor_values")
+        return self
+
 
 class VisualObservation(TensorPayloadMixin):
     model_config = ConfigDict(extra="forbid")
@@ -113,7 +129,27 @@ class VisualObservation(TensorPayloadMixin):
     equipment_family: str = "electrical_panel_family_a"
     panel_id: str | None = None
     media_type: MediaType
+    embedding_values: list[float] | None = None
     metadata: dict[str, str | int | float | bool] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def _ensure_single_payload_source(self) -> VisualObservation:
+        has_embedding = self.embedding_values is not None
+        has_raw = self.has_raw_payload()
+        if has_embedding == has_raw:
+            raise ValueError(
+                "VisualObservation requires exactly one of embedding_values or "
+                "media_uri / tensor_shape + tensor_values"
+            )
+        return self
+
+    def has_precomputed_embedding(self) -> bool:
+        return self.embedding_values is not None
+
+    def load_embedding(self) -> np.ndarray:
+        if self.embedding_values is None:
+            raise ValueError("No precomputed embedding is available")
+        return np.asarray(self.embedding_values, dtype=np.float32)
 
     def context_text(self) -> str:
         values = [f"{key}:{value}" for key, value in sorted(self.metadata.items())]

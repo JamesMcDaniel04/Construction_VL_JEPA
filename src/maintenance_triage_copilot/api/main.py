@@ -6,7 +6,8 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from maintenance_triage_copilot.api.routes import corpus, reference_states, system, triage
+from maintenance_triage_copilot.api.middleware import ApiKeyMiddleware, RequestMetricsMiddleware
+from maintenance_triage_copilot.api.routes import corpus, media, reference_states, system, triage
 from maintenance_triage_copilot.config import AppConfig, load_config
 from maintenance_triage_copilot.encoding.text import MaintenanceTextEncoder
 from maintenance_triage_copilot.models.adapter import VisualTextProjector
@@ -26,6 +27,10 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
         description="Vision-language maintenance triage API for industrial electrical panels.",
         version="0.1.0",
     )
+
+    # Middleware stack (order matters — outermost first)
+    app.add_middleware(RequestMetricsMiddleware)
+    app.add_middleware(ApiKeyMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cfg.api.cors_origins,
@@ -42,11 +47,31 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
         hidden_dim=cfg.adapter.hidden_dim,
         output_dim=cfg.adapter.output_dim,
     )
+
+    projector_checkpoint = cfg.adapter.checkpoint_path
+    projector_checkpoint_loaded = False
+    if projector_checkpoint is not None:
+        from pathlib import Path
+
+        ckpt_path = Path(projector_checkpoint)
+        if not ckpt_path.exists():
+            raise FileNotFoundError(f"Projector checkpoint not found: {ckpt_path}")
+        import torch
+
+        try:
+            state_dict = torch.load(ckpt_path, map_location="cpu", weights_only=True)
+            projector.load_state_dict(state_dict)
+        except Exception as exc:  # pragma: no cover - exact torch error varies by version
+            raise RuntimeError(f"Failed to load projector checkpoint: {ckpt_path}") from exc
+        projector_checkpoint_loaded = True
+    projector.eval()
+
     metadata_store: MetadataStore
     if cfg.database.postgres_url:
         metadata_store = SqlAlchemyMetadataStore(cfg.database.postgres_url)
     else:
         metadata_store = MemoryMetadataStore()
+
     state = AppState(
         config=cfg,
         text_encoder=text_encoder,
@@ -58,10 +83,13 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
             collection_prefix=cfg.database.collection_prefix,
         ),
         metadata_store=metadata_store,
+        projector_checkpoint_path=projector_checkpoint,
+        projector_checkpoint_loaded=projector_checkpoint_loaded,
     )
     app.state.service = TriageService(state)
 
     app.include_router(corpus.router)
+    app.include_router(media.router)
     app.include_router(reference_states.router)
     app.include_router(system.router)
     app.include_router(triage.router)
@@ -71,7 +99,7 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
 def run() -> None:
     setup_logging()
     cfg = load_config()
-    app = create_app()
+    app = create_app(cfg)
     uvicorn.run(app, host=cfg.api.host, port=cfg.api.port)
 
 

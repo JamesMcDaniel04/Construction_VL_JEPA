@@ -1,4 +1,40 @@
-
-
-#Ignore vscode AI rules
+# IDE / editor
 .github/instructions/codacy.instructions.md
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Data & models (large files)
+data/
+checkpoints/
+*.ckpt
+*.pt
+*.pth
+*.bin
+*.safetensors
+
+# Secrets
+.env
+*.key
+credentials.*
+
+# OS
+.DS_Store
+Thumbs.db

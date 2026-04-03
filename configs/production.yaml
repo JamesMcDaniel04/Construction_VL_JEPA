@@ -1,0 +1,31 @@
+# Production config — uses vendored Meta JEPA backbone slices and mounted model assets.
+
+api:
+  host: "0.0.0.0"
+  port: 8000
+  cors_origins: []  # restrict in production — set to your dashboard domain
+
+database:
+  postgres_url: "postgresql://mtc:mtc@postgres:5432/mtc"
+  qdrant_url: "http://qdrant:6333"
+  collection_prefix: "maintenance-triage"
+
+text_encoder:
+  backend: "sentence-transformer"
+  model_name: "/models/text-encoder"
+  embedding_dim: 384
+  local_files_only: true
+  cache_folder: null
+
+adapter:
+  hidden_dim: 384
+  output_dim: 384
+  checkpoint_path: "/models/projector.pt"
+
+image_backbone:
+  use_timm: false
+  checkpoint_path: null  # optionally set to /models/image_backbone.pt
+
+video_backbone:
+  use_timm: false
+  checkpoint_path: null  # optionally set to /models/video_backbone.pt

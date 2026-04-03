@@ -30,6 +30,12 @@ def main() -> None:
         help="JSONL file with observation + target_text",
     )
     parser.add_argument("--epochs", type=int, default=5)
+    parser.add_argument(
+        "--output",
+        type=str,
+        default="checkpoints/projector.pt",
+        help="Path to save the trained projector checkpoint",
+    )
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -68,6 +74,11 @@ def main() -> None:
             optimizer.step()
             total_loss += float(loss.item())
         print(f"epoch={epoch + 1} loss={total_loss / max(len(rows), 1):.4f}")
+
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    torch.save(projector.state_dict(), output_path)
+    print(f"Saved projector checkpoint to {output_path}")
 
 
 if __name__ == "__main__":

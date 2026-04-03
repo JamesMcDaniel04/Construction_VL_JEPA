@@ -1,11 +1,19 @@
-"""Vector retrieval with in-memory fallback and optional Qdrant mirroring."""
+"""Vector retrieval with in-memory fallback and persistent Qdrant storage.
+
+Writes AND reads from Qdrant when available. Falls back to in-memory
+cosine similarity when Qdrant is unreachable.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
+
+from maintenance_triage_copilot.utils.logging import get_logger
+
+log = get_logger(__name__)
 
 
 @dataclass
@@ -16,7 +24,7 @@ class SearchHit:
 
 
 class VectorIndex:
-    """Stores vectors in memory and optionally mirrors writes to Qdrant."""
+    """Stores and searches vectors in Qdrant with in-memory fallback."""
 
     def __init__(
         self,
@@ -26,13 +34,40 @@ class VectorIndex:
         self.collection_prefix = collection_prefix
         self._store: dict[str, list[dict[str, Any]]] = {}
         self._qdrant = None
+        self._qdrant_collections: set[str] = set()
         if qdrant_url:
             try:
                 from qdrant_client import QdrantClient
 
                 self._qdrant = QdrantClient(url=qdrant_url)
-            except Exception:
+                # Cache existing collection names
+                self._qdrant_collections = {
+                    c.name for c in self._qdrant.get_collections().collections
+                }
+            except Exception as exc:
+                log.warning("qdrant_connection_failed error=%s", exc)
                 self._qdrant = None
+
+    def _collection_name(self, namespace: str) -> str:
+        return f"{self.collection_prefix}-{namespace}"
+
+    def _ensure_collection(self, namespace: str, dim: int) -> None:
+        """Create Qdrant collection if it doesn't exist yet."""
+        if self._qdrant is None:
+            return
+        name = self._collection_name(namespace)
+        if name in self._qdrant_collections:
+            return
+        try:
+            from qdrant_client.models import Distance, VectorParams
+
+            self._qdrant.create_collection(
+                collection_name=name,
+                vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
+            )
+            self._qdrant_collections.add(name)
+        except Exception:
+            pass
 
     def upsert(
         self,
@@ -41,43 +76,34 @@ class VectorIndex:
         embedding: np.ndarray,
         payload: dict[str, Any],
     ) -> None:
-        record = {
-            "id": item_id,
-            "embedding": self._normalize(embedding),
-            "payload": payload,
-        }
+        normalized = self._normalize(embedding)
+        record = {"id": item_id, "embedding": normalized, "payload": payload}
+
+        # Always keep in-memory copy (fast reads, survives Qdrant hiccups)
         self._store.setdefault(namespace, [])
         self._store[namespace] = [
             entry for entry in self._store[namespace] if entry["id"] != item_id
         ]
         self._store[namespace].append(record)
 
+        # Mirror to Qdrant
         if self._qdrant is not None:
             try:
-                from qdrant_client.models import Distance, PointStruct, VectorParams
+                from qdrant_client.models import PointStruct
 
-                collection_name = f"{self.collection_prefix}-{namespace}"
-                collections = {c.name for c in self._qdrant.get_collections().collections}
-                if collection_name not in collections:
-                    self._qdrant.create_collection(
-                        collection_name=collection_name,
-                        vectors_config=VectorParams(
-                            size=len(record["embedding"]),
-                            distance=Distance.COSINE,
-                        ),
-                    )
+                self._ensure_collection(namespace, len(normalized))
                 self._qdrant.upsert(
-                    collection_name=collection_name,
+                    collection_name=self._collection_name(namespace),
                     points=[
                         PointStruct(
                             id=item_id,
-                            vector=np.asarray(record["embedding"]).tolist(),
+                            vector=normalized.tolist(),
                             payload=payload,
                         )
                     ],
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("qdrant_upsert_failed namespace=%s error=%s", namespace, exc)
 
     def search(
         self,
@@ -86,10 +112,69 @@ class VectorIndex:
         limit: int,
         equipment_family: str | None = None,
     ) -> list[SearchHit]:
+        query = self._normalize(query)
+
+        # Try Qdrant first for persistent, distributed search
+        if self._qdrant is not None:
+            name = self._collection_name(namespace)
+            if name in self._qdrant_collections:
+                try:
+                    return self._search_qdrant(name, query, limit, equipment_family)
+                except Exception as exc:
+                    log.warning("qdrant_search_failed namespace=%s error=%s", namespace, exc)
+
+        # Fallback to in-memory
+        return self._search_memory(namespace, query, limit, equipment_family)
+
+    def _search_qdrant(
+        self,
+        collection_name: str,
+        query: np.ndarray,
+        limit: int,
+        equipment_family: str | None,
+    ) -> list[SearchHit]:
+        if self._qdrant is None:
+            return []
+
+        query_filter = None
+        if equipment_family:
+            from qdrant_client.models import FieldCondition, Filter, MatchValue
+
+            query_filter = Filter(
+                must=[
+                    FieldCondition(
+                        key="equipment_family",
+                        match=MatchValue(value=equipment_family),
+                    )
+                ]
+            )
+
+        qdrant = cast(Any, self._qdrant)
+        results = qdrant.search(
+            collection_name=collection_name,
+            query_vector=query.tolist(),
+            limit=limit,
+            query_filter=query_filter,
+        )
+        return [
+            SearchHit(
+                item_id=str(r.id),
+                score=max(0.0, min(1.0, r.score)),
+                payload=r.payload or {},
+            )
+            for r in results
+        ]
+
+    def _search_memory(
+        self,
+        namespace: str,
+        query: np.ndarray,
+        limit: int,
+        equipment_family: str | None,
+    ) -> list[SearchHit]:
         records = self._store.get(namespace, [])
         if not records:
             return []
-        query = self._normalize(query)
         hits: list[SearchHit] = []
         for record in records:
             if equipment_family and record["payload"].get("equipment_family") != equipment_family:
@@ -106,10 +191,9 @@ class VectorIndex:
         return hits[:limit]
 
     def status(self) -> dict[str, str]:
-        return {
-            "mode": "qdrant+memory" if self._qdrant is not None else "memory",
-            "namespaces": ",".join(sorted(self._store.keys())) or "empty",
-        }
+        mode = "qdrant+memory" if self._qdrant is not None else "memory"
+        namespaces = ",".join(sorted(self._store.keys())) or "empty"
+        return {"mode": mode, "namespaces": namespaces}
 
     @staticmethod
     def _normalize(vector: np.ndarray) -> np.ndarray:

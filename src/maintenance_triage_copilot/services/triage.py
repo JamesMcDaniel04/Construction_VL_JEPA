@@ -40,6 +40,8 @@ class AppState:
     projector: VisualTextProjector
     vector_index: VectorIndex
     metadata_store: MetadataStore
+    projector_checkpoint_path: str | None = None
+    projector_checkpoint_loaded: bool = False
 
 
 class TriageService:
@@ -114,6 +116,11 @@ class TriageService:
         return response
 
     def health(self) -> dict[str, Any]:
+        projector_status = (
+            "checkpoint_loaded"
+            if self.state.projector_checkpoint_loaded
+            else "random_init"
+        )
         return {
             "status": "healthy",
             "components": {
@@ -123,13 +130,20 @@ class TriageService:
                 "image_backbone": "ready",
                 "video_backbone": "ready",
                 "text_encoder": "ready",
+                "projector": {
+                    "status": projector_status,
+                    "checkpoint_path": self.state.projector_checkpoint_path,
+                    "checkpoint_loaded": self.state.projector_checkpoint_loaded,
+                },
             },
         }
 
     def _encode_visual(self, media: ReferenceState | VisualObservation) -> np.ndarray:
+        if isinstance(media, VisualObservation) and media.has_precomputed_embedding():
+            return self._normalize_embedding(media.load_embedding())
         if media.media_type == MediaType.image:
-            return self.state.image_backbone.encode_observation(media)
-        return self.state.video_backbone.encode_observation(media)
+            return self._normalize_embedding(self.state.image_backbone.encode_observation(media))
+        return self._normalize_embedding(self.state.video_backbone.encode_observation(media))
 
     def _search_states(self, observation: VisualObservation) -> list[SearchHit]:
         embedding = self._encode_visual(observation)
@@ -202,10 +216,7 @@ class TriageService:
         with torch.no_grad():
             projected = self.state.projector(projector_input).squeeze(0).cpu().numpy()
         combined = text_embedding + (0.25 * projected.astype(np.float32))
-        norm = np.linalg.norm(combined)
-        if norm < 1e-8:
-            return cast(np.ndarray, combined)
-        return cast(np.ndarray, combined / norm)
+        return self._normalize_embedding(combined)
 
     def _build_issue_candidates(
         self,
@@ -327,3 +338,11 @@ class TriageService:
         if top_confidence < self.state.config.triage.escalation_threshold:
             return "escalate_for_visual_review"
         return "proceed_with_guided_inspection"
+
+    @staticmethod
+    def _normalize_embedding(vector: np.ndarray) -> np.ndarray:
+        array = np.asarray(vector, dtype=np.float32)
+        norm = np.linalg.norm(array)
+        if norm < 1e-8:
+            return cast(np.ndarray, array)
+        return cast(np.ndarray, array / norm)

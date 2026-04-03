@@ -31,15 +31,28 @@ text_encoder:
 adapter:
   hidden_dim: 384
   output_dim: 384
+  checkpoint_path: null
 
+# Image backbone — vendored Meta I-JEPA slice by default.
+# Optional timm mode remains available for local experimentation.
 image_backbone:
+  use_timm: false
+  timm_model_name: "vit_tiny_patch16_224"
+  timm_pretrained: true
+  checkpoint_path: null
   input_size: 64
   patch_size: 8
   embed_dim: 192
   depth: 4
   num_heads: 3
 
+# Video backbone — vendored Meta V-JEPA slice by default.
+# Optional timm mode remains available for local experimentation.
 video_backbone:
+  use_timm: false
+  timm_model_name: "vit_tiny_patch16_224"
+  timm_pretrained: true
+  checkpoint_path: null
   input_size: 64
   patch_size: 8
   num_frames: 8
