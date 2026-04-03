@@ -19,7 +19,7 @@ class ApiConfig:
 @dataclass
 class DatabaseConfig:
     postgres_url: str | None = "postgresql://mtc:mtc@localhost:5432/mtc"
-    qdrant_url: str | None = None
+    qdrant_url: str | None = "http://localhost:6333"
     collection_prefix: str = "maintenance-triage"
 
 
@@ -45,6 +45,8 @@ class TextEncoderConfig:
     backend: str = "sentence-transformer"
     model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_dim: int = 384
+    local_files_only: bool = False
+    cache_folder: str | None = None
 
 
 @dataclass

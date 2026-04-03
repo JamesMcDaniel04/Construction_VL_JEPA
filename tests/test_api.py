@@ -7,6 +7,7 @@ def test_system_health(client) -> None:
     response = client.get("/system/health")
     assert response.status_code == 200
     assert response.json()["status"] == "healthy"
+    assert response.json()["components"]["metadata_store"]["metadata_store"] == "sqlalchemy"
 
 
 def test_ingest_and_triage_image(client) -> None:

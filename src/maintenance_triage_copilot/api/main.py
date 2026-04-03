@@ -7,18 +7,20 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from maintenance_triage_copilot.api.routes import corpus, reference_states, system, triage
-from maintenance_triage_copilot.config import load_config
+from maintenance_triage_copilot.config import AppConfig, load_config
 from maintenance_triage_copilot.encoding.text import MaintenanceTextEncoder
 from maintenance_triage_copilot.models.adapter import VisualTextProjector
 from maintenance_triage_copilot.models.backbones import IJEPAImageAdapter, VJEPAVideoAdapter
 from maintenance_triage_copilot.retrieval.index import VectorIndex
 from maintenance_triage_copilot.services.triage import AppState, TriageService
 from maintenance_triage_copilot.storage.memory import MemoryMetadataStore
+from maintenance_triage_copilot.storage.protocol import MetadataStore
+from maintenance_triage_copilot.storage.sql import SqlAlchemyMetadataStore
 from maintenance_triage_copilot.utils.logging import setup_logging
 
 
-def create_app(config_path: str | None = None) -> FastAPI:
-    cfg = load_config(config_path)
+def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
+    cfg = config_path if isinstance(config_path, AppConfig) else load_config(config_path)
     app = FastAPI(
         title="Maintenance Triage Copilot",
         description="Vision-language maintenance triage API for industrial electrical panels.",
@@ -40,6 +42,11 @@ def create_app(config_path: str | None = None) -> FastAPI:
         hidden_dim=cfg.adapter.hidden_dim,
         output_dim=cfg.adapter.output_dim,
     )
+    metadata_store: MetadataStore
+    if cfg.database.postgres_url:
+        metadata_store = SqlAlchemyMetadataStore(cfg.database.postgres_url)
+    else:
+        metadata_store = MemoryMetadataStore()
     state = AppState(
         config=cfg,
         text_encoder=text_encoder,
@@ -50,7 +57,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
             qdrant_url=cfg.database.qdrant_url,
             collection_prefix=cfg.database.collection_prefix,
         ),
-        metadata_store=MemoryMetadataStore(),
+        metadata_store=metadata_store,
     )
     app.state.service = TriageService(state)
 

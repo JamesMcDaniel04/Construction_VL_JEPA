@@ -8,6 +8,7 @@ from maintenance_triage_copilot.api.main import create_app
 from maintenance_triage_copilot.config import (
     AdapterConfig,
     AppConfig,
+    DatabaseConfig,
     ImageBackboneConfig,
     RetrievalConfig,
     TextEncoderConfig,
@@ -19,12 +20,17 @@ from maintenance_triage_copilot.models.adapter import VisualTextProjector
 from maintenance_triage_copilot.models.backbones import IJEPAImageAdapter, VJEPAVideoAdapter
 from maintenance_triage_copilot.retrieval.index import VectorIndex
 from maintenance_triage_copilot.services.triage import AppState, TriageService
-from maintenance_triage_copilot.storage.memory import MemoryMetadataStore
+from maintenance_triage_copilot.storage.sql import SqlAlchemyMetadataStore
 
 
 @pytest.fixture
-def small_config() -> AppConfig:
+def small_config(tmp_path) -> AppConfig:
     return AppConfig(
+        database=DatabaseConfig(
+            postgres_url=f"sqlite+pysqlite:///{tmp_path / 'mtc-test.db'}",
+            qdrant_url=None,
+            collection_prefix="test-maintenance-triage",
+        ),
         retrieval=RetrievalConfig(
             top_k_documents=4,
             top_k_incidents=3,
@@ -38,7 +44,7 @@ def small_config() -> AppConfig:
             escalation_threshold=0.5,
             video_num_frames=8,
         ),
-        text_encoder=TextEncoderConfig(backend="hash", embedding_dim=192),
+        text_encoder=TextEncoderConfig(backend="mock", embedding_dim=192),
         adapter=AdapterConfig(hidden_dim=192, output_dim=192),
         image_backbone=ImageBackboneConfig(
             input_size=32,
@@ -76,14 +82,14 @@ def triage_service(small_config: AppConfig) -> TriageService:
         video_backbone=video_backbone,
         projector=projector,
         vector_index=VectorIndex(),
-        metadata_store=MemoryMetadataStore(),
+        metadata_store=SqlAlchemyMetadataStore(small_config.database.postgres_url or ""),
     )
     return TriageService(state)
 
 
 @pytest.fixture
-def client() -> TestClient:
-    app = create_app()
+def client(small_config: AppConfig) -> TestClient:
+    app = create_app(small_config)
     return TestClient(app)
 
 

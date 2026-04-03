@@ -28,7 +28,7 @@ from maintenance_triage_copilot.models.adapter import VisualTextProjector
 from maintenance_triage_copilot.models.backbones import IJEPAImageAdapter, VJEPAVideoAdapter
 from maintenance_triage_copilot.retrieval.chunking import chunk_document
 from maintenance_triage_copilot.retrieval.index import SearchHit, VectorIndex
-from maintenance_triage_copilot.storage.memory import MemoryMetadataStore
+from maintenance_triage_copilot.storage.protocol import MetadataStore
 
 
 @dataclass
@@ -39,7 +39,7 @@ class AppState:
     video_backbone: VJEPAVideoAdapter
     projector: VisualTextProjector
     vector_index: VectorIndex
-    metadata_store: MemoryMetadataStore
+    metadata_store: MetadataStore
 
 
 class TriageService:
@@ -187,7 +187,7 @@ class TriageService:
             pieces.append(context)
         if state_assessment.matched_state_label:
             pieces.append(state_assessment.matched_state_label)
-            matched = self.state.metadata_store.reference_states.get(
+            matched = self.state.metadata_store.get_reference_state(
                 state_assessment.matched_state_id or ""
             )
             if matched:

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-import math
 from typing import cast
 
 import numpy as np
@@ -12,22 +11,31 @@ from maintenance_triage_copilot.config import TextEncoderConfig
 
 
 class MaintenanceTextEncoder:
-    """Sentence-transformer wrapper with deterministic hashing fallback."""
+    """Sentence-transformer wrapper with an explicit mock backend for tests."""
 
     def __init__(self, cfg: TextEncoderConfig):
         self.cfg = cfg
         self._model = None
         if cfg.backend == "sentence-transformer":
-            try:
-                from sentence_transformers import SentenceTransformer
+            from sentence_transformers import SentenceTransformer
 
+            try:
                 self._model = SentenceTransformer(
                     cfg.model_name,
                     device="cpu",
-                    local_files_only=True,
+                    cache_folder=cfg.cache_folder,
+                    local_files_only=cfg.local_files_only,
                 )
-            except Exception:
-                self._model = None
+            except Exception as exc:
+                raise RuntimeError(
+                    "Failed to load sentence-transformer model "
+                    f"'{cfg.model_name}'. Install the weights or set an explicit "
+                    "test-only backend."
+                ) from exc
+        elif cfg.backend == "mock":
+            self._model = None
+        else:
+            raise ValueError(f"Unsupported text encoder backend: {cfg.backend}")
 
     def encode(self, texts: list[str]) -> np.ndarray:
         if self._model is not None:
@@ -52,6 +60,4 @@ class MaintenanceTextEncoder:
         norm = np.linalg.norm(vector)
         if norm > 1e-8:
             vector /= norm
-        else:
-            vector.fill(1.0 / math.sqrt(self.cfg.embedding_dim))
         return vector

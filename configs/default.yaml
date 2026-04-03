@@ -5,7 +5,7 @@ api:
 
 database:
   postgres_url: "postgresql://mtc:mtc@localhost:5432/mtc"
-  qdrant_url: null
+  qdrant_url: "http://localhost:6333"
   collection_prefix: "maintenance-triage"
 
 retrieval:
@@ -25,6 +25,8 @@ text_encoder:
   backend: "sentence-transformer"
   model_name: "sentence-transformers/all-MiniLM-L6-v2"
   embedding_dim: 384
+  local_files_only: false
+  cache_folder: null
 
 adapter:
   hidden_dim: 384

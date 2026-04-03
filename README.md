@@ -8,6 +8,8 @@ API-first vision-language maintenance triage copilot for one electrical-panel fa
 - Short clips use a vendored V-JEPA-style video backbone.
 - Manuals, SOPs, and prior tickets are chunked and indexed for grounded retrieval.
 - Triage responses return structured issue candidates, panel-state assessment, next steps, similar incidents, and escalation guidance.
+- Metadata persists through SQLAlchemy to the configured database URL instead of an in-memory default.
+- The text encoder requires a real sentence-transformer model in normal app runs. Tests use an explicit `mock` backend instead of a silent fallback.
 
 ## Local Development
 

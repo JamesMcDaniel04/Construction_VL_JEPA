@@ -9,6 +9,11 @@ The repo now targets a maintenance triage copilot for electrical panels.
 3. Compare observations against curated reference states for panel-state assessment.
 4. Fuse technician question text at retrieval time and return grounded issue candidates, next steps, similar incidents, and escalation guidance.
 
+## Persistence
+
+- Metadata uses SQLAlchemy against the configured database URL.
+- Vector search uses Qdrant when configured and falls back to in-process vectors only when Qdrant is unavailable.
+
 ## Backbones
 
 - Image backbone source: `facebookresearch/ijepa` commit `52c1ae95d05f743e000e8f10a1f3a79b10cff048`

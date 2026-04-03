@@ -26,6 +26,9 @@ class MemoryMetadataStore:
     def add_reference_state(self, reference_state: ReferenceState) -> None:
         self.reference_states[reference_state.state_id] = reference_state
 
+    def get_reference_state(self, state_id: str) -> ReferenceState | None:
+        return self.reference_states.get(state_id)
+
     def record_triage(self, request_id: str, response: TriageResponse) -> None:
         self.triage_history.append({"request_id": request_id, "response": response.model_dump()})
 
