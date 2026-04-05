@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import cast
 
 from maintenance_triage_copilot.domain.models import CorpusDocument, CorpusSourceType
+from maintenance_triage_copilot.telemetry import trace_operation
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}
 
@@ -171,7 +172,8 @@ def _ocr_pil_image(image) -> str:
         raise ImportError("OCR requires pytesseract to be installed") from exc
 
     try:
-        text = pytesseract.image_to_string(image)
+        with trace_operation("ocr.image_to_string"):
+            text = pytesseract.image_to_string(image)
     except Exception as exc:
         raise RuntimeError("OCR failed; verify that the tesseract binary is installed") from exc
     return cast(str, text).strip()

@@ -49,7 +49,11 @@ class MemoryMetadataStore:
         return self.triage_audits.get(audit_id)
 
     def list_triage_audits(self, limit: int, offset: int) -> list[TriageAuditRecord]:
-        audits = sorted(self.triage_audits.values(), key=lambda audit: audit.created_at, reverse=True)
+        audits = sorted(
+            self.triage_audits.values(),
+            key=lambda audit: audit.created_at,
+            reverse=True,
+        )
         return audits[offset : offset + limit]
 
     def status(self) -> dict[str, str]:

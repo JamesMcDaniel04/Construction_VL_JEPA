@@ -33,18 +33,28 @@ Development mode can run with SQLite metadata and in-process vector fallback. Pr
 - `POST /media/encode`
 - `POST /reference-states`
 - `POST /triage/analyze`
+- `GET /audit/triage`
+- `GET /audit/triage/{audit_id}`
+- `GET /metrics`
 - `GET /system/health`
 
 ## Production Models
 
 - Mount model assets into `/models`.
+- Include `/models/manifest.json` with SHA256 digests, official backbone presets, and asset paths.
 - Set the sentence-transformer directory at `/models/text-encoder`.
 - Set the projector checkpoint at `/models/projector.pt`.
 - Set the calibrated triage-policy checkpoint at `/models/triage-policy.json`.
-- Optional backbone checkpoints can also be mounted under `/models`.
+- Set the official I-JEPA encoder checkpoint at `/models/image_backbone.pt`.
+- Set the official V-JEPA encoder checkpoint at `/models/video_backbone.pt`.
+- Run `mtc-validate-model-assets --config /app/configs/production.yaml` as the canonical preflight check.
 
 ## Production Runtime
 
 - `runtime.mode: production` fails fast unless `database.postgres_url` is PostgreSQL and `database.qdrant_url` is configured.
+- Production also fails fast unless `/models/manifest.json`, the configured checkpoints, bearer service tokens, and S3-compatible object storage are all configured and reachable.
 - Alembic migrations run at startup by default and can also be applied with `mtc-db-upgrade --database-url ...`.
+- Protected endpoints require `Authorization: Bearer <token>`. Only `GET /system/health` is unauthenticated.
+- Uploaded media and corpus files are persisted to object storage and linked into triage audit records.
+- `GET /metrics` exposes Prometheus metrics, and `GET /audit/triage` exposes persisted triage audit history.
 - The compose smoke test mounts a real `/models` directory and can be run with `RUN_DOCKER_SMOKE=1 PYENV_VERSION=3.11.9 python -m pytest tests/integration/test_docker_compose_smoke.py -q`.

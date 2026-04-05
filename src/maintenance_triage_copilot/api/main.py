@@ -6,8 +6,19 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from maintenance_triage_copilot.api.middleware import BearerAuthMiddleware, RequestContextMiddleware
-from maintenance_triage_copilot.api.routes import audit, corpus, media, metrics, reference_states, system, triage
+from maintenance_triage_copilot.api.middleware import (
+    BearerAuthMiddleware,
+    RequestContextMiddleware,
+)
+from maintenance_triage_copilot.api.routes import (
+    audit,
+    corpus,
+    media,
+    metrics,
+    reference_states,
+    system,
+    triage,
+)
 from maintenance_triage_copilot.config import AppConfig, load_config
 from maintenance_triage_copilot.encoding.text import MaintenanceTextEncoder
 from maintenance_triage_copilot.models.adapter import VisualTextProjector
@@ -17,7 +28,11 @@ from maintenance_triage_copilot.models.policy import CalibratedTriagePolicy
 from maintenance_triage_copilot.retrieval.index import VectorIndex
 from maintenance_triage_copilot.services.triage import AppState, TriageService
 from maintenance_triage_copilot.storage.memory import MemoryMetadataStore
-from maintenance_triage_copilot.storage.object_store import MemoryObjectStore, S3ObjectStore
+from maintenance_triage_copilot.storage.object_store import (
+    MemoryObjectStore,
+    ObjectStore,
+    S3ObjectStore,
+)
 from maintenance_triage_copilot.storage.protocol import MetadataStore
 from maintenance_triage_copilot.storage.sql import SqlAlchemyMetadataStore
 from maintenance_triage_copilot.telemetry import configure_telemetry
@@ -27,7 +42,6 @@ from maintenance_triage_copilot.utils.logging import setup_logging
 def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
     cfg = config_path if isinstance(config_path, AppConfig) else load_config(config_path)
     is_production = cfg.runtime.is_production()
-    assets = validate_model_assets(cfg)
     if is_production and (
         cfg.database.postgres_url is None
         or not cfg.database.postgres_url.startswith("postgresql")
@@ -35,17 +49,23 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
         raise RuntimeError("Production mode requires a PostgreSQL database URL")
     if is_production and not cfg.database.qdrant_url:
         raise RuntimeError("Qdrant is required in production mode")
-    if is_production and cfg.security.require_auth_in_production and not cfg.security.service_tokens:
+    if (
+        is_production
+        and cfg.security.require_auth_in_production
+        and not cfg.security.service_tokens
+    ):
         raise RuntimeError("Production mode requires bearer service tokens")
+    if cfg.policy.require_checkpoint and cfg.policy.checkpoint_path is None:
+        raise RuntimeError("Production mode requires a calibrated triage policy checkpoint")
+    assets = validate_model_assets(cfg)
     app = FastAPI(
         title="Maintenance Triage Copilot",
         description="Vision-language maintenance triage API for industrial electrical panels.",
         version="0.1.0",
     )
 
-    # Middleware stack (order matters — outermost first)
-    app.add_middleware(RequestContextMiddleware)
-    app.add_middleware(BearerAuthMiddleware)
+    # Starlette wraps middleware in reverse registration order. RequestContext
+    # must be outermost so auth failures still receive request IDs, logs, and metrics.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cfg.api.cors_origins,
@@ -53,6 +73,8 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.add_middleware(BearerAuthMiddleware)
+    app.add_middleware(RequestContextMiddleware)
 
     text_encoder = MaintenanceTextEncoder(cfg.text_encoder)
     image_backbone = IJEPAImageAdapter(cfg.image_backbone, runtime_spec=assets.image_backbone)
@@ -108,6 +130,7 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
             raise RuntimeError("Postgres is required in production mode")
         metadata_store = MemoryMetadataStore()
 
+    object_store: ObjectStore
     if cfg.object_store.endpoint_url and cfg.object_store.bucket:
         object_store = S3ObjectStore(cfg.object_store, required=is_production)
     else:

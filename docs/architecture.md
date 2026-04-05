@@ -13,6 +13,7 @@ The repo now targets a maintenance triage copilot for electrical panels.
 
 - Metadata uses SQLAlchemy against the configured database URL.
 - Production mode requires PostgreSQL plus Qdrant and fails fast if either dependency is unavailable.
+- Uploaded media and document evidence are persisted to S3-compatible object storage and linked to audit records.
 - Development mode can still use SQLite metadata and in-process vector fallback.
 - Alembic owns schema creation and upgrades through `mtc-db-upgrade`.
 
@@ -36,5 +37,7 @@ Only the minimal model slices needed for frozen feature extraction are vendored.
 
 ## Deployment
 
-- Production containers mount `/models` read-only for the sentence-transformer directory, projector checkpoint, and calibrated triage-policy checkpoint.
-- `tests/integration/test_docker_compose_smoke.py` exercises the compose stack with mounted model assets, Postgres, Qdrant, and the live API.
+- Production containers mount `/models` read-only for the manifest, sentence-transformer directory, image/video backbone checkpoints, projector checkpoint, and calibrated triage-policy checkpoint.
+- Bearer service auth is the supported production access mode; only `/system/health` is unauthenticated.
+- Prometheus metrics are exposed at `/metrics`, and triage audit history is available at `/audit/triage`.
+- `tests/integration/test_docker_compose_smoke.py` exercises the compose stack with mounted model assets, Postgres, Qdrant, MinIO, bearer auth, audit persistence, and the live API.

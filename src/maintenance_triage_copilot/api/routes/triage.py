@@ -13,7 +13,11 @@ router = APIRouter(prefix="/triage", tags=["triage"])
 
 
 @router.post("/analyze", response_model=TriageResponse)
-async def analyze(request_body: TriageRequest, request: Request, response: Response) -> TriageResponse:
+async def analyze(
+    request_body: TriageRequest,
+    request: Request,
+    response: Response,
+) -> TriageResponse:
     service = request.app.state.service
     triage_response = cast(TriageResponse, service.analyze(request_body))
     audit = service.record_triage_audit(

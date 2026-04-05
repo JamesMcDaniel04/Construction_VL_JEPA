@@ -1,5 +1,10 @@
 runtime:
   mode: "development"
+  model_dir: "./models"
+  allow_smoke_assets: false
+  max_image_upload_bytes: 5242880
+  max_video_upload_bytes: 52428800
+  max_document_upload_bytes: 20971520
 
 api:
   host: "0.0.0.0"
@@ -30,6 +35,25 @@ policy:
   require_checkpoint: false
   top_k_issues: 3
 
+security:
+  service_tokens: {}
+  require_auth_in_production: true
+
+telemetry:
+  prometheus_enabled: true
+  otlp_endpoint: null
+  service_name: "maintenance-triage-copilot"
+
+object_store:
+  endpoint_url: null
+  bucket: null
+  region: null
+  access_key: null
+  secret_key: null
+  force_path_style: true
+  required_in_production: true
+  create_bucket_if_missing: true
+
 text_encoder:
   backend: "sentence-transformer"
   model_name: "sentence-transformers/all-MiniLM-L6-v2"
@@ -45,6 +69,8 @@ adapter:
 # Image backbone — vendored Meta I-JEPA slice by default.
 # Optional timm mode remains available for local experimentation.
 image_backbone:
+  preset: null
+  require_checkpoint: false
   use_timm: false
   timm_model_name: "vit_tiny_patch16_224"
   timm_pretrained: true
@@ -58,6 +84,8 @@ image_backbone:
 # Video backbone — vendored Meta V-JEPA slice by default.
 # Optional timm mode remains available for local experimentation.
 video_backbone:
+  preset: null
+  require_checkpoint: false
   use_timm: false
   timm_model_name: "vit_tiny_patch16_224"
   timm_pretrained: true

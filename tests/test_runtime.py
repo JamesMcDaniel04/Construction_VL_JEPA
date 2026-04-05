@@ -6,7 +6,6 @@ import torch
 from pydantic import ValidationError
 
 from maintenance_triage_copilot.api.main import create_app
-from maintenance_triage_copilot.config import RuntimeConfig
 from maintenance_triage_copilot.domain.models import MediaType, VisualObservation
 from maintenance_triage_copilot.models.adapter import VisualTextProjector
 from maintenance_triage_copilot.models.policy import CalibratedTriagePolicy
@@ -80,7 +79,7 @@ def test_create_app_fails_fast_when_policy_checkpoint_is_missing(small_config, t
 
 
 def test_create_app_requires_postgres_in_production(small_config) -> None:
-    small_config.runtime = RuntimeConfig(mode="production")
+    small_config.runtime.mode = "production"
     small_config.database.postgres_url = None
     small_config.database.qdrant_url = "http://qdrant.example:6333"
     with pytest.raises(RuntimeError, match="PostgreSQL"):
@@ -88,7 +87,7 @@ def test_create_app_requires_postgres_in_production(small_config) -> None:
 
 
 def test_create_app_requires_postgresql_scheme_in_production(small_config, tmp_path) -> None:
-    small_config.runtime = RuntimeConfig(mode="production")
+    small_config.runtime.mode = "production"
     small_config.database.postgres_url = f"sqlite+pysqlite:///{tmp_path / 'not-prod.db'}"
     small_config.database.qdrant_url = "http://qdrant.example:6333"
     with pytest.raises(RuntimeError, match="PostgreSQL"):
@@ -96,7 +95,7 @@ def test_create_app_requires_postgresql_scheme_in_production(small_config, tmp_p
 
 
 def test_create_app_requires_qdrant_in_production(small_config) -> None:
-    small_config.runtime = RuntimeConfig(mode="production")
+    small_config.runtime.mode = "production"
     small_config.database.postgres_url = "postgresql://mtc:mtc@db.example:5432/mtc"
     small_config.database.qdrant_url = None
     with pytest.raises(RuntimeError, match="Qdrant"):
@@ -104,7 +103,7 @@ def test_create_app_requires_qdrant_in_production(small_config) -> None:
 
 
 def test_create_app_requires_policy_checkpoint_in_production(small_config) -> None:
-    small_config.runtime = RuntimeConfig(mode="production")
+    small_config.runtime.mode = "production"
     small_config.database.postgres_url = "postgresql://mtc:mtc@db.example:5432/mtc"
     small_config.database.qdrant_url = "http://qdrant.example:6333"
     small_config.policy.require_checkpoint = True

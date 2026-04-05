@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, cast
 from uuid import uuid4
 
@@ -195,7 +195,7 @@ class TriageService:
             response_payload=response_payload.model_dump(mode="json"),
             linked_asset_ids=linked_asset_ids,
             outcome_status="completed",
-            created_at=datetime.now(tz=timezone.utc),
+            created_at=datetime.now(tz=UTC),
             metadata=metadata or {},
         )
         self.state.metadata_store.record_triage_audit(audit)
@@ -245,7 +245,7 @@ class TriageService:
                 "video_backbone": self.state.asset_status.get(
                     "video_backbone", {"status": "ready"}
                 ),
-                "text_encoder": "ready",
+                "text_encoder": self.state.asset_status.get("text_encoder", {"status": "ready"}),
                 "manifest": self.state.asset_status.get("manifest", {"status": "missing"}),
                 "auth": {"mode": self.state.auth_mode},
                 "telemetry": {"mode": self.state.telemetry_mode},
@@ -267,7 +267,9 @@ class TriageService:
             if isinstance(media, VisualObservation) and media.has_precomputed_embedding():
                 return self._normalize_embedding(media.load_embedding())
             if media.media_type == MediaType.image:
-                return self._normalize_embedding(self.state.image_backbone.encode_observation(media))
+                return self._normalize_embedding(
+                    self.state.image_backbone.encode_observation(media)
+                )
             return self._normalize_embedding(self.state.video_backbone.encode_observation(media))
 
     def _search_states(self, observation: VisualObservation) -> list[SearchHit]:
@@ -497,7 +499,9 @@ class TriageService:
         with trace_operation("policy.escalation"):
             action, risk = self.state.triage_policy.choose_escalation(
                 {
-                    "top_issue_confidence": issue_candidates[0].confidence if issue_candidates else 0.0,
+                    "top_issue_confidence": (
+                        issue_candidates[0].confidence if issue_candidates else 0.0
+                    ),
                     "state_confidence": state_assessment.confidence,
                     "state_mismatch": 1.0 if state_assessment.matches_expected is False else 0.0,
                     "top_incident_score": incident_hits[0].score if incident_hits else 0.0,

@@ -46,10 +46,12 @@ class VJEPAVideoAdapter:
 
             input_size = runtime_spec.input_size if runtime_spec is not None else cfg.input_size
             patch_size = runtime_spec.patch_size if runtime_spec is not None else cfg.patch_size
-            num_frames = runtime_spec.num_frames if runtime_spec is not None else cfg.num_frames
-            tubelet_size = (
-                runtime_spec.tubelet_size if runtime_spec is not None else cfg.tubelet_size
+            num_frames = (
+                runtime_spec.num_frames if runtime_spec is not None else cfg.num_frames
             )
+            tubelet_size = runtime_spec.tubelet_size if runtime_spec is not None else cfg.tubelet_size
+            assert num_frames is not None
+            assert tubelet_size is not None
             embed_dim = runtime_spec.embedding_dim if runtime_spec is not None else cfg.embed_dim
             depth = runtime_spec.depth if runtime_spec is not None else cfg.depth
             num_heads = runtime_spec.num_heads if runtime_spec is not None else cfg.num_heads

@@ -8,7 +8,11 @@ from uuid import uuid4
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
-from maintenance_triage_copilot.telemetry import current_trace_id, record_auth_failure, record_request
+from maintenance_triage_copilot.telemetry import (
+    current_trace_id,
+    record_auth_failure,
+    record_request,
+)
 from maintenance_triage_copilot.utils.logging import get_logger
 
 log = get_logger(__name__)

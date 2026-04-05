@@ -1,5 +1,10 @@
 runtime:
   mode: "production"
+  model_dir: "/models"
+  allow_smoke_assets: false
+  max_image_upload_bytes: 5242880
+  max_video_upload_bytes: 52428800
+  max_document_upload_bytes: 20971520
 
 # Production config — uses vendored Meta JEPA backbone slices and mounted model assets.
 
@@ -19,6 +24,25 @@ policy:
   require_checkpoint: true
   top_k_issues: 3
 
+security:
+  service_tokens: {}
+  require_auth_in_production: true
+
+telemetry:
+  prometheus_enabled: true
+  otlp_endpoint: null
+  service_name: "maintenance-triage-copilot"
+
+object_store:
+  endpoint_url: "http://minio:9000"
+  bucket: "mtc-assets"
+  region: "us-east-1"
+  access_key: null
+  secret_key: null
+  force_path_style: true
+  required_in_production: true
+  create_bucket_if_missing: true
+
 text_encoder:
   backend: "sentence-transformer"
   model_name: "/models/text-encoder"
@@ -32,9 +56,13 @@ adapter:
   checkpoint_path: "/models/projector.pt"
 
 image_backbone:
+  preset: "ijepa_vith14_224"
+  require_checkpoint: true
   use_timm: false
-  checkpoint_path: null  # optionally set to /models/image_backbone.pt
+  checkpoint_path: "/models/image_backbone.pt"
 
 video_backbone:
+  preset: "vjepa_vith16_224_2x16x16"
+  require_checkpoint: true
   use_timm: false
-  checkpoint_path: null  # optionally set to /models/video_backbone.pt
+  checkpoint_path: "/models/video_backbone.pt"

@@ -184,5 +184,7 @@ def _decode_image_bytes(data: bytes) -> torch.Tensor:
 
         img = Image.open(io.BytesIO(data)).convert("RGB")
         arr = np.array(img, dtype=np.float32) / 255.0
-        arr = (arr - np.array([0.485, 0.456, 0.406])) / np.array([0.229, 0.224, 0.225])
-        return torch.from_numpy(arr.transpose(2, 0, 1))
+        mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+        std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+        arr = ((arr - mean) / std).astype(np.float32, copy=False)
+        return torch.from_numpy(arr.transpose(2, 0, 1)).float()

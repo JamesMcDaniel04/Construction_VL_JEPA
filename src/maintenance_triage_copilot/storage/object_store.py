@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import io
+import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -60,7 +61,7 @@ class MemoryObjectStore:
             byte_size=len(data),
             sha256=sha256,
             content_type=content_type,
-            created_at=datetime.now(tz=timezone.utc),
+            created_at=datetime.now(tz=UTC),
         )
 
     def presigned_url(self, object_uri: str, expires_seconds: int = 3600) -> str:
@@ -120,7 +121,7 @@ class S3ObjectStore:
             byte_size=len(data),
             sha256=sha256,
             content_type=content_type,
-            created_at=datetime.now(tz=timezone.utc),
+            created_at=datetime.now(tz=UTC),
         )
 
     def presigned_url(self, object_uri: str, expires_seconds: int = 3600) -> str:
@@ -144,9 +145,22 @@ class S3ObjectStore:
         }
 
     def _ensure_bucket(self, *, create_if_missing: bool) -> None:
-        try:
-            self._client.head_bucket(Bucket=self.bucket)
-        except self._client_error:
-            if not create_if_missing:
-                raise
-            self._client.create_bucket(Bucket=self.bucket)
+        deadline = time.time() + 20
+        last_error: Exception | None = None
+        while time.time() < deadline:
+            try:
+                self._client.head_bucket(Bucket=self.bucket)
+                return
+            except Exception as exc:
+                last_error = exc
+                if not create_if_missing:
+                    time.sleep(1)
+                    continue
+                try:
+                    self._client.create_bucket(Bucket=self.bucket)
+                    return
+                except Exception as create_exc:
+                    last_error = create_exc
+                    time.sleep(1)
+        if last_error is not None:
+            raise last_error

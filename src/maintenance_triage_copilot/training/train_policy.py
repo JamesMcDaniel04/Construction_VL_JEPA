@@ -95,16 +95,12 @@ def _train_regressor(
     )
 
 
-def main() -> None:
-    setup_logging()
-    parser = argparse.ArgumentParser(description="Train calibrated triage policy")
-    parser.add_argument("--data", required=True, help="JSONL training file")
-    parser.add_argument("--output", required=True, help="Output JSON policy checkpoint")
-    parser.add_argument("--epochs", type=int, default=200)
-    parser.add_argument("--lr", type=float, default=5e-2)
-    args = parser.parse_args()
-
-    rows = _load_rows(Path(args.data))
+def train_policy_from_rows(
+    rows: list[dict],
+    *,
+    epochs: int,
+    lr: float,
+) -> CalibratedTriagePolicy:
     feature_sets: dict[str, list[tuple[list[float], float]]] = defaultdict(list)
     default_examples: list[tuple[list[float], float]] = []
     escalation_examples: list[tuple[list[float], float]] = []
@@ -131,8 +127,8 @@ def main() -> None:
         weights, bias = _train_binary_classifier(
             examples,
             len(ISSUE_FEATURE_NAMES),
-            epochs=args.epochs,
-            lr=args.lr,
+            epochs=epochs,
+            lr=lr,
         )
         issue_weights[issue_class] = weights
         issue_bias[issue_class] = bias
@@ -140,17 +136,17 @@ def main() -> None:
     default_issue_weights, default_issue_bias = _train_binary_classifier(
         default_examples,
         len(ISSUE_FEATURE_NAMES),
-        epochs=args.epochs,
-        lr=args.lr,
+        epochs=epochs,
+        lr=lr,
     )
     escalation_weights, escalation_bias = _train_regressor(
         escalation_examples,
         len(ESCALATION_FEATURE_NAMES),
-        epochs=args.epochs,
-        lr=args.lr,
+        epochs=epochs,
+        lr=lr,
     )
 
-    policy = CalibratedTriagePolicy(
+    return CalibratedTriagePolicy(
         issue_weights=issue_weights,
         issue_bias=issue_bias,
         default_issue_weights=default_issue_weights,
@@ -161,8 +157,27 @@ def main() -> None:
             "escalate_to_senior_technician": 0.8,
             "escalate_for_visual_review": 0.5,
         },
-        metadata={"trained_examples": str(len(rows))},
+        metadata={
+            "trained_examples": str(len(rows)),
+            "epochs": str(epochs),
+            "learning_rate": str(lr),
+            "issue_feature_names": ",".join(ISSUE_FEATURE_NAMES),
+            "escalation_feature_names": ",".join(ESCALATION_FEATURE_NAMES),
+        },
     )
+
+
+def main() -> None:
+    setup_logging()
+    parser = argparse.ArgumentParser(description="Train calibrated triage policy")
+    parser.add_argument("--data", required=True, help="JSONL training file")
+    parser.add_argument("--output", required=True, help="Output JSON policy checkpoint")
+    parser.add_argument("--epochs", type=int, default=200)
+    parser.add_argument("--lr", type=float, default=5e-2)
+    args = parser.parse_args()
+
+    rows = _load_rows(Path(args.data))
+    policy = train_policy_from_rows(rows, epochs=args.epochs, lr=args.lr)
     policy.save(args.output)
     print(f"Saved calibrated policy checkpoint to {args.output}")
 

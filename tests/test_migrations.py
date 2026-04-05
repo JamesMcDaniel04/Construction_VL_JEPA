@@ -15,6 +15,8 @@ def test_run_migrations_creates_expected_tables(tmp_path) -> None:
     assert set(inspector.get_table_names()) >= {
         "corpus_documents",
         "incident_records",
+        "media_assets",
         "reference_states",
+        "triage_audits",
         "triage_history",
     }

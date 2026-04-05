@@ -5,8 +5,8 @@ services:
       POSTGRES_USER: mtc
       POSTGRES_PASSWORD: mtc
       POSTGRES_DB: mtc
-    volumes:
-      - pg_data:/var/lib/postgresql/data
+    tmpfs:
+      - /var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U mtc"]
       interval: 5s
@@ -14,8 +14,8 @@ services:
 
   qdrant:
     image: qdrant/qdrant:v1.10.1
-    volumes:
-      - qdrant_data:/qdrant/storage
+    tmpfs:
+      - /qdrant/storage
     healthcheck:
       test:
         [
@@ -33,18 +33,19 @@ services:
       MINIO_ROOT_PASSWORD: minioadmin
     ports:
       - "${MTC_MINIO_PORT:-9000}:9000"
-    volumes:
-      - minio_data:/data
+    tmpfs:
+      - /data
 
   api:
     build:
-      context: .
+      context: ../..
+      dockerfile: Dockerfile
     environment:
       MTC_CONFIG: ${MTC_CONFIG:-/app/configs/production.yaml}
       MTC_OBJECT_STORE_ACCESS_KEY: ${MTC_OBJECT_STORE_ACCESS_KEY:-minioadmin}
       MTC_OBJECT_STORE_SECRET_KEY: ${MTC_OBJECT_STORE_SECRET_KEY:-minioadmin}
       MTC_SERVICE_TOKENS_JSON: ${MTC_SERVICE_TOKENS_JSON:-{"compose-smoke":"smoke-token"}}
-      MTC_ALLOW_SMOKE_ASSETS: ${MTC_ALLOW_SMOKE_ASSETS:-0}
+      MTC_ALLOW_SMOKE_ASSETS: ${MTC_ALLOW_SMOKE_ASSETS:-1}
     depends_on:
       postgres:
         condition: service_healthy
@@ -56,8 +57,3 @@ services:
       - "${MTC_API_PORT:-8000}:8000"
     volumes:
       - ${MTC_MODEL_DIR:-./models}:/models:ro
-
-volumes:
-  pg_data:
-  qdrant_data:
-  minio_data:

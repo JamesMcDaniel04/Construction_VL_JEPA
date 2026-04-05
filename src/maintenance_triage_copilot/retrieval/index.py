@@ -12,6 +12,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 import numpy as np
 
+from maintenance_triage_copilot.telemetry import trace_operation
 from maintenance_triage_copilot.utils.logging import get_logger
 
 log = get_logger(__name__)
@@ -51,7 +52,10 @@ class VectorIndex:
             except Exception as exc:
                 if self.required:
                     raise RuntimeError("Qdrant is required but could not be reached") from exc
-                log.warning("qdrant_connection_failed error=%s", exc)
+                log.warning(
+                    "qdrant_connection_failed",
+                    extra={"event": "qdrant_connection_failed", "error": str(exc)},
+                )
                 self._qdrant = None
 
     def _collection_name(self, namespace: str) -> str:
@@ -67,17 +71,25 @@ class VectorIndex:
         try:
             from qdrant_client.models import Distance, VectorParams
 
-            self._qdrant.create_collection(
-                collection_name=name,
-                vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
-            )
+            with trace_operation("qdrant.create_collection"):
+                self._qdrant.create_collection(
+                    collection_name=name,
+                    vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
+                )
             self._qdrant_collections.add(name)
         except Exception as exc:
             if self.required:
                 raise RuntimeError(
                     f"Failed to create required Qdrant collection: {name}"
                 ) from exc
-            log.warning("qdrant_collection_create_failed collection=%s error=%s", name, exc)
+            log.warning(
+                "qdrant_collection_create_failed",
+                extra={
+                    "event": "qdrant_collection_create_failed",
+                    "collection": name,
+                    "error": str(exc),
+                },
+            )
 
     def upsert(
         self,
@@ -104,20 +116,28 @@ class VectorIndex:
                 self._ensure_collection(namespace, len(normalized))
                 qdrant_payload = dict(payload)
                 qdrant_payload["_item_id"] = item_id
-                self._qdrant.upsert(
-                    collection_name=self._collection_name(namespace),
-                    points=[
-                        PointStruct(
-                            id=self._qdrant_point_id(namespace, item_id),
-                            vector=normalized.tolist(),
-                            payload=qdrant_payload,
-                        )
-                    ],
-                )
+                with trace_operation("qdrant.upsert"):
+                    self._qdrant.upsert(
+                        collection_name=self._collection_name(namespace),
+                        points=[
+                            PointStruct(
+                                id=self._qdrant_point_id(namespace, item_id),
+                                vector=normalized.tolist(),
+                                payload=qdrant_payload,
+                            )
+                        ],
+                    )
             except Exception as exc:
                 if self.required:
                     raise RuntimeError("Qdrant upsert failed in required mode") from exc
-                log.warning("qdrant_upsert_failed namespace=%s error=%s", namespace, exc)
+                log.warning(
+                    "qdrant_upsert_failed",
+                    extra={
+                        "event": "qdrant_upsert_failed",
+                        "namespace": namespace,
+                        "error": str(exc),
+                    },
+                )
 
     def search(
         self,
@@ -133,11 +153,19 @@ class VectorIndex:
             name = self._collection_name(namespace)
             if name in self._qdrant_collections:
                 try:
-                    return self._search_qdrant(name, query, limit, equipment_family)
+                    with trace_operation("qdrant.search"):
+                        return self._search_qdrant(name, query, limit, equipment_family)
                 except Exception as exc:
                     if self.required:
                         raise RuntimeError("Qdrant search failed in required mode") from exc
-                    log.warning("qdrant_search_failed namespace=%s error=%s", namespace, exc)
+                    log.warning(
+                        "qdrant_search_failed",
+                        extra={
+                            "event": "qdrant_search_failed",
+                            "namespace": namespace,
+                            "error": str(exc),
+                        },
+                    )
 
         # Fallback to in-memory
         if self.required:

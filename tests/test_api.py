@@ -12,8 +12,11 @@ def test_system_health(client) -> None:
     assert response.status_code == 200
     assert response.json()["status"] == "healthy"
     assert response.json()["components"]["metadata_store"]["metadata_store"] == "sqlalchemy"
-    assert response.json()["components"]["projector"]["checkpoint_loaded"] is False
+    assert response.json()["components"]["projector"]["checkpoint_loaded"] is True
+    assert response.json()["components"]["manifest"]["validated"] is True
+    assert response.json()["components"]["auth"]["mode"] == "bearer"
     assert "X-Request-Duration-Ms" in response.headers
+    assert "X-Request-ID" in response.headers
 
 
 def test_ingest_and_triage_image(client) -> None:
@@ -162,6 +165,7 @@ def test_media_triage_uses_embedding_without_reencoding_observation(client, monk
     )
     assert response.status_code == 200
     assert response.json()["state_assessment"]["matched_state_label"] == "fault_light_on"
+    assert response.headers["X-Audit-ID"].startswith("audit-")
 
 
 def test_media_encode_round_trip_works_with_triage_analyze(client, monkeypatch) -> None:
@@ -216,3 +220,72 @@ def test_media_encode_round_trip_works_with_triage_analyze(client, monkeypatch) 
 
 def test_legacy_package_removed() -> None:
     assert importlib.util.find_spec("construction_vl_jepa") is None
+
+
+def test_metrics_endpoint_returns_prometheus_payload(client) -> None:
+    response = client.get("/metrics")
+    assert response.status_code == 200
+    assert "mtc_http_requests_total" in response.text
+    assert response.headers["content-type"].startswith("text/plain")
+
+
+def test_missing_bearer_token_returns_request_context(client) -> None:
+    client.headers.pop("Authorization", None)
+    response = client.post(
+        "/corpus/documents",
+        json={
+            "document_id": "doc-auth",
+            "source_type": "manual",
+            "title": "Needs Auth",
+            "body": "Inspect breaker B4.",
+        },
+    )
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Missing bearer token"
+    assert "X-Request-ID" in response.headers
+    assert "X-Request-Duration-Ms" in response.headers
+
+
+def test_triage_audit_detail_includes_linked_assets(client, monkeypatch) -> None:
+    service = client.app.state.service
+    service.add_reference_state(
+        ReferenceState(
+            state_id="audit-state",
+            media_type="image",
+            state_label="fault_light_on",
+            description="Red fault light illuminated near breaker B4.",
+            caption="Panel image with a red fault indicator next to breaker B4.",
+            tensor_shape=[3, 16, 16],
+            tensor_values=[0.9] * (3 * 16 * 16),
+        )
+    )
+    monkeypatch.setattr(
+        service.state.image_backbone,
+        "encode_raw_image",
+        lambda _: np.full((192,), 0.2, dtype=np.float32),
+    )
+
+    triage_response = client.post(
+        "/media/triage",
+        files={"file": ("panel.png", b"fake-image", "image/png")},
+        data={
+            "equipment_family": "electrical_panel_family_a",
+            "question": "What component is likely causing this?",
+        },
+    )
+    assert triage_response.status_code == 200
+    audit_id = triage_response.headers["X-Audit-ID"]
+
+    list_response = client.get("/audit/triage")
+    assert list_response.status_code == 200
+    assert any(item["audit_id"] == audit_id for item in list_response.json()["items"])
+
+    detail_response = client.get(f"/audit/triage/{audit_id}")
+    assert detail_response.status_code == 200
+    payload = detail_response.json()
+    assert payload["audit"]["audit_id"] == audit_id
+    assert payload["audit"]["principal"] == "test-client"
+    assert len(payload["linked_assets"]) == 1
+    assert payload["linked_assets"][0]["asset_type"] == "triage_upload"
+    assert payload["linked_assets"][0]["object_uri"].startswith("memory://triage_upload/")
+    assert payload["linked_assets"][0]["presigned_url"].startswith("memory://triage_upload/")
