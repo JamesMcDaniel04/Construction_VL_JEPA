@@ -12,7 +12,7 @@ Pilot-ready mobile field-tech troubleshooting product for one electrical-panel f
 - OCR-backed ingestion supports scanned PDFs and uploaded image documents.
 - Triage responses return structured likely issue candidates, panel-state assessment, next inspection steps, similar incidents, escalation guidance, and safety/uncertainty notices.
 - First-class case/session APIs support site, asset, panel-family, media, and technician feedback history.
-- Invited human pilot users are supported alongside service tokens.
+- Invited human pilot users are persisted in the metadata store and can be issued from the admin surface.
 - Metadata persists through SQLAlchemy to the configured database URL instead of an in-memory default.
 - The text encoder requires a real sentence-transformer model in normal app runs. Tests use an explicit `mock` backend instead of a silent fallback.
 - The supported training path in this repo is `mtc-train-adapter` for the visual-text projector. Self-supervised JEPA pretraining is not part of the supported runtime.
@@ -27,13 +27,27 @@ PYENV_VERSION=3.11.9 mtc-api
 npm install
 npm run mobile
 npm run admin
+npm run frontend:test
 ```
 
 Development mode can run with SQLite metadata and in-process vector fallback. Production mode requires PostgreSQL, Qdrant, and mounted model assets.
 
+## Dev Orchestration
+
+- `docker compose up api postgres qdrant minio` starts the backend stack.
+- `docker compose --profile ui up admin` starts the admin web console inside compose on port `5173`.
+- `docker compose --profile mobile up mobile` starts the Expo dev service inside compose for optional containerized mobile development.
+- The compose stack bootstraps one persisted admin invite seed by default:
+  - token: `admin-bootstrap-token`
+  - organization: `org-1`
+  - display name: `Bootstrap Admin`
+  Use that once to connect the admin console, then issue real technician/admin invites from `POST /admin/pilot-users/invite`.
+
 ## Endpoints
 
 - `GET /auth/me`
+- `GET /admin/pilot-users`
+- `POST /admin/pilot-users/invite`
 - `POST /cases`
 - `POST /cases/{case_id}/analyze`
 - `POST /cases/{case_id}/feedback`
@@ -59,7 +73,7 @@ Development mode can run with SQLite metadata and in-process vector fallback. Pr
 ## Pilot Surfaces
 
 - [`apps/mobile`](./apps/mobile): React Native + Expo technician app for on-site capture, analysis, retry, and feedback.
-- [`apps/admin`](./apps/admin): React admin console for corpus uploads, reference-state curation, dashboard metrics, and case review.
+- [`apps/admin`](./apps/admin): React admin console for persisted invite issuance, corpus uploads, reference-state curation, dashboard metrics, and case review.
 
 ## Production Models
 

@@ -8,6 +8,7 @@ from maintenance_triage_copilot.domain.models import (
     CorpusDocument,
     IncidentRecord,
     MediaAssetRecord,
+    PilotUser,
     ReferenceState,
     TriageAuditRecord,
     TriageCase,
@@ -37,6 +38,12 @@ class MetadataStore(Protocol):
     def get_case(self, case_id: str) -> TriageCase | None: ...
 
     def list_cases(self, limit: int, offset: int) -> list[TriageCase]: ...
+
+    def add_pilot_user(self, pilot_user: PilotUser) -> None: ...
+
+    def get_pilot_user(self, user_id: str) -> PilotUser | None: ...
+
+    def list_pilot_users(self, limit: int, offset: int) -> list[PilotUser]: ...
 
     def add_media_asset(self, asset: MediaAssetRecord) -> None: ...
 

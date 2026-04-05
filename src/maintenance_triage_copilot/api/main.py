@@ -18,12 +18,13 @@ from maintenance_triage_copilot.api.routes import (
     dashboard,
     media,
     metrics,
+    pilot_users,
     reference_states,
     system,
     triage,
 )
 from maintenance_triage_copilot.config import AppConfig, load_config
-from maintenance_triage_copilot.domain.models import PilotUser
+from maintenance_triage_copilot.domain.models import PilotUserSeed
 from maintenance_triage_copilot.encoding.text import MaintenanceTextEncoder
 from maintenance_triage_copilot.models.adapter import VisualTextProjector
 from maintenance_triage_copilot.models.assets import validate_model_assets
@@ -56,14 +57,7 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
         raise RuntimeError("Production mode requires a PostgreSQL database URL")
     if is_production and not cfg.database.qdrant_url:
         raise RuntimeError("Qdrant is required in production mode")
-    pilot_users = [PilotUser.model_validate(item) for item in cfg.security.pilot_users]
-    if (
-        is_production
-        and cfg.security.require_auth_in_production
-        and not cfg.security.service_tokens
-        and not pilot_users
-    ):
-        raise RuntimeError("Production mode requires bearer auth credentials")
+    pilot_user_seeds = [PilotUserSeed.model_validate(item) for item in cfg.security.pilot_users]
     if cfg.policy.require_checkpoint and cfg.policy.checkpoint_path is None:
         raise RuntimeError("Production mode requires a calibrated triage policy checkpoint")
     assets = validate_model_assets(cfg)
@@ -147,15 +141,6 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
             raise RuntimeError("Production mode requires S3-compatible object storage")
         object_store = MemoryObjectStore()
 
-    auth_required = bool(cfg.security.service_tokens or pilot_users) or (
-        is_production and cfg.security.require_auth_in_production
-    )
-    app.state.service_token_lookup = {
-        token: principal for principal, token in cfg.security.service_tokens.items()
-    }
-    app.state.pilot_user_lookup = {user.token: user for user in pilot_users}
-    app.state.auth_required = auth_required
-
     state = AppState(
         config=cfg,
         text_encoder=text_encoder,
@@ -171,7 +156,7 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
         metadata_store=metadata_store,
         object_store=object_store,
         asset_status=assets.status,
-        auth_mode="bearer" if auth_required else "disabled",
+        auth_mode="disabled",
         telemetry_mode=(
             "prometheus+otlp"
             if cfg.telemetry.prometheus_enabled and cfg.telemetry.otlp_endpoint
@@ -185,6 +170,32 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
         policy_checkpoint_loaded=policy_checkpoint_loaded,
     )
     app.state.service = TriageService(state)
+    for seed in pilot_user_seeds:
+        app.state.service.seed_pilot_user(seed)
+
+    def refresh_pilot_user_lookup() -> dict[str, object]:
+        users = app.state.service.list_pilot_users(limit=5000, offset=0)
+        lookup = {user.token_sha256: user for user in users if user.active}
+        app.state.pilot_user_lookup = lookup
+        return lookup
+
+    pilot_lookup = refresh_pilot_user_lookup()
+    auth_required = bool(cfg.security.service_tokens or pilot_lookup) or (
+        is_production and cfg.security.require_auth_in_production
+    )
+    if (
+        is_production
+        and cfg.security.require_auth_in_production
+        and not cfg.security.service_tokens
+        and not pilot_lookup
+    ):
+        raise RuntimeError("Production mode requires bearer auth credentials")
+    app.state.service_token_lookup = {
+        token: principal for principal, token in cfg.security.service_tokens.items()
+    }
+    app.state.refresh_pilot_user_lookup = refresh_pilot_user_lookup
+    app.state.auth_required = auth_required
+    app.state.service.state.auth_mode = "bearer" if auth_required else "disabled"
     configure_telemetry(
         cfg=cfg.telemetry,
         app=app,
@@ -198,6 +209,7 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
     app.include_router(dashboard.router)
     app.include_router(media.router)
     app.include_router(metrics.router)
+    app.include_router(pilot_users.router)
     app.include_router(reference_states.router)
     app.include_router(system.router)
     app.include_router(triage.router)

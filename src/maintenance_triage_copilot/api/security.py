@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any, cast
 
 from fastapi import HTTPException, Request
 
 from maintenance_triage_copilot.domain.models import UserRole
+
+
+def bearer_token_sha256(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
 def current_identity(request: Request) -> dict[str, Any]:

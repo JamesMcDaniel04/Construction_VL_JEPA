@@ -1,5 +1,6 @@
 import type { FormEvent } from "react";
 import { startTransition, useEffect, useState } from "react";
+import { helpfulRateLabel, inviteIssuedMessage } from "./lib/pilotAdmin";
 
 type DashboardMetrics = {
   total_cases: number;
@@ -59,15 +60,27 @@ type Identity = {
   organization_id?: string | null;
 };
 
+type PilotUserView = {
+  user_id: string;
+  organization_id: string;
+  role: string;
+  display_name: string;
+  email?: string | null;
+  created_at: string;
+  active: boolean;
+};
+
 type Session = {
   apiBaseUrl: string;
   token: string;
 };
 
 const SESSION_KEY = "mtc.admin.session";
+const DEFAULT_API_BASE_URL =
+  import.meta.env.VITE_MTC_API_BASE_URL ?? "http://localhost:8000";
 
 export default function App() {
-  const [apiBaseUrl, setApiBaseUrl] = useState("http://localhost:8000");
+  const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_API_BASE_URL);
   const [token, setToken] = useState("");
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [dashboard, setDashboard] = useState<DashboardMetrics | null>(null);
@@ -76,6 +89,7 @@ export default function App() {
   const [selectedAudit, setSelectedAudit] = useState<AuditDetail | null>(null);
   const [documents, setDocuments] = useState<Array<{ document_id: string; title: string }>>([]);
   const [referenceStates, setReferenceStates] = useState<Array<{ state_id: string; state_label: string }>>([]);
+  const [pilotUsers, setPilotUsers] = useState<PilotUserView[]>([]);
   const [connecting, setConnecting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
 
@@ -100,6 +114,11 @@ export default function App() {
     caption: "",
     equipmentFamily: "electrical_panel_family_a",
     file: null as File | null,
+  });
+  const [inviteForm, setInviteForm] = useState({
+    displayName: "",
+    email: "",
+    role: "technician",
   });
 
   useEffect(() => {
@@ -139,7 +158,12 @@ export default function App() {
       headers: authHeaders(bearer),
     });
     setIdentity(me);
-    await Promise.all([loadDashboard(baseUrl, bearer), loadCases(baseUrl, bearer), loadCorpus(baseUrl, bearer)]);
+    await Promise.all([
+      loadDashboard(baseUrl, bearer),
+      loadCases(baseUrl, bearer),
+      loadCorpus(baseUrl, bearer),
+      loadPilotUsers(baseUrl, bearer),
+    ]);
     if (!silent) {
       setMessage("Admin session connected.");
     }
@@ -174,6 +198,16 @@ export default function App() {
     ]);
     setDocuments(docs.items);
     setReferenceStates(states.items);
+  }
+
+  async function loadPilotUsers(baseUrl = apiBaseUrl, bearer = token) {
+    const payload = await fetchJson<{ items: PilotUserView[] }>(
+      `${baseUrl}/admin/pilot-users`,
+      {
+        headers: authHeaders(bearer),
+      },
+    );
+    setPilotUsers(payload.items);
   }
 
   async function openCase(caseId: string) {
@@ -285,6 +319,30 @@ export default function App() {
     }
   }
 
+  async function invitePilotUser(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      const payload = await fetchJson<{
+        user: PilotUserView;
+        bearer_token: string;
+      }>(`${apiBaseUrl}/admin/pilot-users/invite`, {
+        method: "POST",
+        headers: authHeaders(token),
+        body: JSON.stringify({
+          organization_id: identity?.organization_id ?? "org-1",
+          role: inviteForm.role,
+          display_name: inviteForm.displayName,
+          email: inviteForm.email || null,
+        }),
+      });
+      setInviteForm({ displayName: "", email: "", role: "technician" });
+      await loadPilotUsers();
+      setMessage(inviteIssuedMessage(payload.user.display_name, payload.bearer_token));
+    } catch (error) {
+      setMessage(errorMessage(error));
+    }
+  }
+
   if (!identity) {
     return (
       <main className="shell auth-shell">
@@ -330,7 +388,10 @@ export default function App() {
           </p>
         </div>
         <div className="topbar-actions">
-          <button className="ghost-button" onClick={() => void Promise.all([loadDashboard(), loadCases(), loadCorpus()])}>
+          <button
+            className="ghost-button"
+            onClick={() => void Promise.all([loadDashboard(), loadCases(), loadCorpus(), loadPilotUsers()])}
+          >
             Refresh
           </button>
           <button
@@ -374,9 +435,7 @@ export default function App() {
             <div>
               <p className="subtle">Helpful feedback rate</p>
               <strong className="rate-pill">
-                {dashboard.helpful_feedback_rate == null
-                  ? "No feedback yet"
-                  : `${Math.round(dashboard.helpful_feedback_rate * 100)}%`}
+                {helpfulRateLabel(dashboard.helpful_feedback_rate)}
               </strong>
             </div>
           </div>
@@ -384,6 +443,48 @@ export default function App() {
       ) : null}
 
       <section className="two-column">
+        <div className="panel">
+          <h2>Pilot user invites</h2>
+          <form className="stack" onSubmit={invitePilotUser}>
+            <input
+              placeholder="display name"
+              value={inviteForm.displayName}
+              onChange={(event) =>
+                setInviteForm({ ...inviteForm, displayName: event.target.value })
+              }
+              required
+            />
+            <input
+              placeholder="email"
+              value={inviteForm.email}
+              onChange={(event) => setInviteForm({ ...inviteForm, email: event.target.value })}
+            />
+            <select
+              value={inviteForm.role}
+              onChange={(event) => setInviteForm({ ...inviteForm, role: event.target.value })}
+            >
+              <option value="technician">technician</option>
+              <option value="admin">admin</option>
+            </select>
+            <button className="primary-button" type="submit">
+              Issue invite token
+            </button>
+          </form>
+          <div className="compact-list">
+            {pilotUsers.slice(0, 8).map((user) => (
+              <div key={user.user_id} className="list-row">
+                <div>
+                  <strong>{user.display_name}</strong>
+                  <p className="subtle">
+                    {user.role} · {user.email ?? "no email"}
+                  </p>
+                </div>
+                <span>{user.user_id}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
         <div className="panel">
           <h2>Upload manual / SOP</h2>
           <form className="stack" onSubmit={submitDocument}>

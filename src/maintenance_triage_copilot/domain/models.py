@@ -271,11 +271,54 @@ class PilotUser(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     user_id: str
+    organization_id: str
+    role: UserRole
+    display_name: str
+    email: str | None = None
+    token_sha256: str
+    invited_by_user_id: str | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    active: bool = True
+
+
+class PilotUserSeed(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str
     token: str
     organization_id: str
     role: UserRole
     display_name: str
     email: str | None = None
+
+
+class PilotUserInviteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    organization_id: str
+    role: UserRole
+    display_name: str
+    email: str | None = None
+
+
+class PilotUserView(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str
+    organization_id: str
+    role: UserRole
+    display_name: str
+    email: str | None = None
+    invited_by_user_id: str | None = None
+    created_at: datetime
+    active: bool = True
+
+
+class PilotUserInviteResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user: PilotUserView
+    bearer_token: str
 
 
 class TriageCaseCreateRequest(BaseModel):

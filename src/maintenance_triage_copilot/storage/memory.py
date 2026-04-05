@@ -6,6 +6,7 @@ from maintenance_triage_copilot.domain.models import (
     CorpusDocument,
     IncidentRecord,
     MediaAssetRecord,
+    PilotUser,
     ReferenceState,
     TriageAuditRecord,
     TriageCase,
@@ -19,6 +20,7 @@ class MemoryMetadataStore:
         self.incidents: dict[str, IncidentRecord] = {}
         self.reference_states: dict[str, ReferenceState] = {}
         self.triage_cases: dict[str, TriageCase] = {}
+        self.pilot_users: dict[str, PilotUser] = {}
         self.media_assets: dict[str, MediaAssetRecord] = {}
         self.triage_audits: dict[str, TriageAuditRecord] = {}
         self.triage_history: list[dict[str, object]] = []
@@ -64,6 +66,20 @@ class MemoryMetadataStore:
         )
         return items[offset : offset + limit]
 
+    def add_pilot_user(self, pilot_user: PilotUser) -> None:
+        self.pilot_users[pilot_user.user_id] = pilot_user
+
+    def get_pilot_user(self, user_id: str) -> PilotUser | None:
+        return self.pilot_users.get(user_id)
+
+    def list_pilot_users(self, limit: int, offset: int) -> list[PilotUser]:
+        items = sorted(
+            self.pilot_users.values(),
+            key=lambda item: item.created_at,
+            reverse=True,
+        )
+        return items[offset : offset + limit]
+
     def add_media_asset(self, asset: MediaAssetRecord) -> None:
         self.media_assets[asset.asset_id] = asset
 
@@ -91,6 +107,7 @@ class MemoryMetadataStore:
             "incidents": str(len(self.incidents)),
             "reference_states": str(len(self.reference_states)),
             "triage_cases": str(len(self.triage_cases)),
+            "pilot_users": str(len(self.pilot_users)),
             "media_assets": str(len(self.media_assets)),
             "triage_audits": str(len(self.triage_audits)),
         }

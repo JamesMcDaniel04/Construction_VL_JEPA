@@ -15,6 +15,11 @@ import {
   TextInput,
   View,
 } from "react-native";
+import {
+  pendingCaseLabel,
+  pendingCaseStatusMessage,
+  restoreDraftCase,
+} from "./src/lib/pilotState";
 
 type Identity = {
   principal: string;
@@ -94,6 +99,8 @@ type CaseDetail = {
 
 const SESSION_KEY = "mtc.mobile.session";
 const DRAFT_KEY = "mtc.mobile.draft";
+const DEFAULT_API_BASE_URL =
+  process.env.EXPO_PUBLIC_MTC_API_BASE_URL ?? "http://localhost:8000";
 const DEFAULT_DRAFT: DraftCase = {
   siteId: "",
   assetId: "",
@@ -107,7 +114,7 @@ const DEFAULT_DRAFT: DraftCase = {
 };
 
 export default function App() {
-  const [apiBaseUrl, setApiBaseUrl] = useState("http://localhost:8000");
+  const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_API_BASE_URL);
   const [token, setToken] = useState("");
   const [identity, setIdentity] = useState<Identity | null>(null);
   const [draft, setDraft] = useState<DraftCase>(DEFAULT_DRAFT);
@@ -138,10 +145,7 @@ export default function App() {
   }, [draft, loadingSession]);
 
   const pendingLabel = useMemo(() => {
-    if (!draft.pendingCaseId) {
-      return null;
-    }
-    return `Analysis pending for ${draft.pendingCaseId}. Retry upload when connectivity stabilizes.`;
+    return pendingCaseLabel(draft.pendingCaseId);
   }, [draft.pendingCaseId]);
 
   async function loadPersistedState() {
@@ -152,7 +156,7 @@ export default function App() {
       ]);
       let restoredDraft = DEFAULT_DRAFT;
       if (draftRaw) {
-        restoredDraft = { ...DEFAULT_DRAFT, ...(JSON.parse(draftRaw) as DraftCase) };
+        restoredDraft = restoreDraftCase(DEFAULT_DRAFT, draftRaw);
         setDraft(restoredDraft);
       }
       if (sessionRaw) {
@@ -374,9 +378,7 @@ export default function App() {
       if (!detail.analysis) {
         setDraft((current) => ({ ...current, pendingCaseId: caseId }));
         setSyncMessage(
-          detail.status === "pending_analysis"
-            ? "This case is still waiting for a successful upload or analysis retry."
-            : "This draft case still needs a successful media upload.",
+          pendingCaseStatusMessage(detail.status),
         );
       }
     } catch (error) {

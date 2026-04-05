@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -10,6 +11,7 @@ from uuid import uuid4
 import numpy as np
 import torch
 
+from maintenance_triage_copilot.api.security import bearer_token_sha256
 from maintenance_triage_copilot.config import AppConfig
 from maintenance_triage_copilot.domain.models import (
     AdminDashboardMetrics,
@@ -23,6 +25,11 @@ from maintenance_triage_copilot.domain.models import (
     MediaAssetView,
     MediaType,
     NextStep,
+    PilotUser,
+    PilotUserInviteRequest,
+    PilotUserInviteResponse,
+    PilotUserSeed,
+    PilotUserView,
     ReferenceState,
     SimilarIncident,
     StateAssessment,
@@ -113,6 +120,59 @@ class TriageService:
 
     def list_reference_states(self, *, limit: int, offset: int) -> list[ReferenceState]:
         return self.state.metadata_store.list_reference_states(limit, offset)
+
+    def seed_pilot_user(self, seed: PilotUserSeed) -> PilotUser:
+        existing = self.state.metadata_store.get_pilot_user(seed.user_id)
+        if existing is not None:
+            return existing
+        pilot_user = PilotUser(
+            user_id=seed.user_id,
+            organization_id=seed.organization_id,
+            role=seed.role,
+            display_name=seed.display_name,
+            email=seed.email,
+            token_sha256=bearer_token_sha256(seed.token),
+        )
+        self.state.metadata_store.add_pilot_user(pilot_user)
+        return pilot_user
+
+    def invite_pilot_user(
+        self,
+        request: PilotUserInviteRequest,
+        *,
+        invited_by_user_id: str,
+    ) -> PilotUserInviteResponse:
+        bearer_token = f"mtc-user-{secrets.token_urlsafe(24)}"
+        pilot_user = PilotUser(
+            user_id=f"user-{uuid4().hex[:16]}",
+            organization_id=request.organization_id,
+            role=request.role,
+            display_name=request.display_name,
+            email=request.email,
+            token_sha256=bearer_token_sha256(bearer_token),
+            invited_by_user_id=invited_by_user_id,
+        )
+        self.state.metadata_store.add_pilot_user(pilot_user)
+        return PilotUserInviteResponse(
+            user=self.pilot_user_view(pilot_user),
+            bearer_token=bearer_token,
+        )
+
+    def list_pilot_users(self, *, limit: int, offset: int) -> list[PilotUser]:
+        return self.state.metadata_store.list_pilot_users(limit, offset)
+
+    @staticmethod
+    def pilot_user_view(pilot_user: PilotUser) -> PilotUserView:
+        return PilotUserView(
+            user_id=pilot_user.user_id,
+            organization_id=pilot_user.organization_id,
+            role=pilot_user.role,
+            display_name=pilot_user.display_name,
+            email=pilot_user.email,
+            invited_by_user_id=pilot_user.invited_by_user_id,
+            created_at=pilot_user.created_at,
+            active=pilot_user.active,
+        )
 
     def analyze(self, request: TriageRequest) -> TriageResponse:
         observation = request.observation

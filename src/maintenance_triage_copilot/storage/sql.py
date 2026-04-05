@@ -11,6 +11,7 @@ from maintenance_triage_copilot.domain.models import (
     CorpusDocument,
     IncidentRecord,
     MediaAssetRecord,
+    PilotUser,
     ReferenceState,
     TriageAuditRecord,
     TriageCase,
@@ -61,6 +62,16 @@ class TriageCaseRecordORM(Base):
     status = Column(String, nullable=False, index=True)
     created_at = Column(String, nullable=False, index=True)
     updated_at = Column(String, nullable=False, index=True)
+    payload = Column(JSON, nullable=False)
+
+
+class PilotUserRecordORM(Base):
+    __tablename__ = "pilot_users"
+
+    user_id = Column(String, primary_key=True)
+    organization_id = Column(String, nullable=False, index=True)
+    role = Column(String, nullable=False, index=True)
+    created_at = Column(String, nullable=False, index=True)
     payload = Column(JSON, nullable=False)
 
 
@@ -200,6 +211,37 @@ class SqlAlchemyMetadataStore:
             ).all()
         return [TriageCase.model_validate(self._payload(row.payload)) for row in rows]
 
+    def add_pilot_user(self, pilot_user: PilotUser) -> None:
+        payload = pilot_user.model_dump(mode="json")
+        with self.session_factory.begin() as session:
+            session.merge(
+                PilotUserRecordORM(
+                    user_id=pilot_user.user_id,
+                    organization_id=pilot_user.organization_id,
+                    role=pilot_user.role.value,
+                    created_at=pilot_user.created_at.isoformat(),
+                    payload=payload,
+                )
+            )
+
+    def get_pilot_user(self, user_id: str) -> PilotUser | None:
+        with self.session_factory() as session:
+            record = session.get(PilotUserRecordORM, user_id)
+            if record is None:
+                return None
+            payload = self._payload(record.payload)
+        return PilotUser.model_validate(payload)
+
+    def list_pilot_users(self, limit: int, offset: int) -> list[PilotUser]:
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(PilotUserRecordORM)
+                .order_by(PilotUserRecordORM.created_at.desc())
+                .offset(offset)
+                .limit(limit)
+            ).all()
+        return [PilotUser.model_validate(self._payload(row.payload)) for row in rows]
+
     def add_media_asset(self, asset: MediaAssetRecord) -> None:
         payload = asset.model_dump(mode="json")
         with self.session_factory.begin() as session:
@@ -257,6 +299,7 @@ class SqlAlchemyMetadataStore:
             incident_count = self._count(session, IncidentRecordORM)
             reference_state_count = self._count(session, ReferenceStateRecord)
             triage_case_count = self._count(session, TriageCaseRecordORM)
+            pilot_user_count = self._count(session, PilotUserRecordORM)
             media_asset_count = self._count(session, MediaAssetRecordORM)
             audit_count = self._count(session, TriageAuditRecordORM)
         return {
@@ -265,6 +308,7 @@ class SqlAlchemyMetadataStore:
             "incidents": str(incident_count),
             "reference_states": str(reference_state_count),
             "triage_cases": str(triage_case_count),
+            "pilot_users": str(pilot_user_count),
             "media_assets": str(media_asset_count),
             "triage_audits": str(audit_count),
         }

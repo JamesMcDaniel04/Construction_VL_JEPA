@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
+from maintenance_triage_copilot.api.security import bearer_token_sha256
 from maintenance_triage_copilot.domain.models import UserRole
 from maintenance_triage_copilot.telemetry import (
     current_trace_id,
@@ -57,7 +58,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
         token = header.removeprefix("Bearer ").strip()
         principal = service_lookup.get(token)
-        pilot_user = pilot_lookup.get(token)
+        pilot_user = pilot_lookup.get(bearer_token_sha256(token))
         if principal is None and pilot_user is None:
             record_auth_failure(request.url.path)
             return Response(

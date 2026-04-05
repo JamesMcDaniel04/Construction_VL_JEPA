@@ -16,6 +16,7 @@ def test_run_migrations_creates_expected_tables(tmp_path) -> None:
         "corpus_documents",
         "incident_records",
         "media_assets",
+        "pilot_users",
         "reference_states",
         "triage_audits",
         "triage_cases",

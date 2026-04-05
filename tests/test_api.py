@@ -312,6 +312,33 @@ def test_auth_me_returns_pilot_identity(technician_client, admin_client) -> None
     assert admin_response.json()["display_name"] == "Sam Supervisor"
 
 
+def test_admin_can_invite_persisted_pilot_user(admin_client) -> None:
+    invite_response = admin_client.post(
+        "/admin/pilot-users/invite",
+        json={
+            "organization_id": "org-1",
+            "role": "technician",
+            "display_name": "Jordan Newhire",
+            "email": "jordan@example.com",
+        },
+    )
+    assert invite_response.status_code == 200
+    payload = invite_response.json()
+    assert payload["user"]["display_name"] == "Jordan Newhire"
+    assert payload["bearer_token"].startswith("mtc-user-")
+
+    list_response = admin_client.get("/admin/pilot-users")
+    assert list_response.status_code == 200
+    assert any(item["display_name"] == "Jordan Newhire" for item in list_response.json()["items"])
+
+    invited_client = admin_client
+    invited_client.headers.update({"Authorization": f"Bearer {payload['bearer_token']}"})
+    me_response = invited_client.get("/auth/me")
+    assert me_response.status_code == 200
+    assert me_response.json()["display_name"] == "Jordan Newhire"
+    assert me_response.json()["role"] == "technician"
+
+
 def test_case_lifecycle_for_technician(client, technician_client, monkeypatch) -> None:
     service = technician_client.app.state.service
     service.add_document(
