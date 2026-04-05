@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 
 import numpy as np
+from PIL import Image
 
-from maintenance_triage_copilot.domain.models import ReferenceState, VisualObservation
+from maintenance_triage_copilot.domain.models import (
+    CorpusDocument,
+    CorpusSourceType,
+    IncidentRecord,
+    ReferenceState,
+    VisualObservation,
+)
 
 
 def test_system_health(client) -> None:
@@ -289,3 +297,207 @@ def test_triage_audit_detail_includes_linked_assets(client, monkeypatch) -> None
     assert payload["linked_assets"][0]["asset_type"] == "triage_upload"
     assert payload["linked_assets"][0]["object_uri"].startswith("memory://triage_upload/")
     assert payload["linked_assets"][0]["presigned_url"].startswith("memory://triage_upload/")
+
+
+def test_auth_me_returns_pilot_identity(technician_client, admin_client) -> None:
+    technician_response = technician_client.get("/auth/me")
+    assert technician_response.status_code == 200
+    assert technician_response.json()["principal_type"] == "human"
+    assert technician_response.json()["role"] == "technician"
+    assert technician_response.json()["organization_id"] == "org-1"
+
+    admin_response = admin_client.get("/auth/me")
+    assert admin_response.status_code == 200
+    assert admin_response.json()["role"] == "admin"
+    assert admin_response.json()["display_name"] == "Sam Supervisor"
+
+
+def test_case_lifecycle_for_technician(client, technician_client, monkeypatch) -> None:
+    service = technician_client.app.state.service
+    service.add_document(
+        CorpusDocument(
+            document_id="case-doc-1",
+            source_type=CorpusSourceType.manual,
+            title="Panel Inspection SOP",
+            body=(
+                "Check breaker handle alignment. Verify the overload relay and inspect "
+                "the contact block."
+            ),
+            tags=["stuck_breaker"],
+        )
+    )
+    service.add_incident(
+        IncidentRecord(
+            incident_id="case-inc-1",
+            title="Breaker fault with red lamp",
+            summary="Red lamp stayed on after reset.",
+            issue_class="stuck_breaker",
+            fix_summary="Reset breaker and replace contact block.",
+        )
+    )
+    service.add_reference_state(
+        ReferenceState(
+            state_id="case-state-1",
+            media_type="image",
+            state_label="fault_light_on",
+            description="Red fault light illuminated.",
+            caption="Electrical panel with a persistent red fault light.",
+            tensor_shape=[3, 16, 16],
+            tensor_values=[0.8] * (3 * 16 * 16),
+        )
+    )
+
+    from maintenance_triage_copilot.api.routes import cases as cases_route
+
+    monkeypatch.setattr(cases_route, "assess_image_capture", lambda _: [])
+    monkeypatch.setattr(
+        service.state.image_backbone,
+        "encode_raw_image",
+        lambda _: np.full((192,), 0.8, dtype=np.float32),
+    )
+
+    create_response = technician_client.post(
+        "/cases",
+        json={
+            "site_id": "site-a",
+            "asset_id": "panel-42",
+            "panel_family": "family-a",
+            "panel_id": "panel-42a",
+            "question": "What is likely causing this red light?",
+            "expected_state_label": "fault_light_on",
+        },
+    )
+    assert create_response.status_code == 200
+    case_id = create_response.json()["case_id"]
+
+    analyze_response = technician_client.post(
+        f"/cases/{case_id}/analyze",
+        files={"file": ("panel.png", _valid_png_bytes(), "image/png")},
+    )
+    assert analyze_response.status_code == 200
+    analyzed_case = analyze_response.json()
+    assert analyzed_case["analysis"]["issue_candidates"]
+    assert analyzed_case["analysis"]["safety_notices"]
+    assert analyzed_case["analysis"]["uncertainty_summary"]
+    assert analyze_response.headers["X-Audit-ID"].startswith("audit-")
+
+    feedback_response = technician_client.post(
+        f"/cases/{case_id}/feedback",
+        json={"labels": ["helpful"], "comment": "Saved me a call to the senior tech."},
+    )
+    assert feedback_response.status_code == 200
+    assert feedback_response.json()["feedback"]["labels"] == ["helpful"]
+
+    list_response = technician_client.get("/cases")
+    assert list_response.status_code == 200
+    assert list_response.json()["items"][0]["case_id"] == case_id
+    assert list_response.json()["items"][0]["helpful"] is True
+
+    detail_response = technician_client.get(f"/cases/{case_id}")
+    assert detail_response.status_code == 200
+    assert (
+        detail_response.json()["analysis"]["state_assessment"]["matched_state_label"]
+        == "fault_light_on"
+    )
+
+
+def test_case_analyze_rejects_low_quality_capture(technician_client, monkeypatch) -> None:
+    create_response = technician_client.post(
+        "/cases",
+        json={
+            "site_id": "site-b",
+            "asset_id": "panel-77",
+            "panel_family": "family-a",
+        },
+    )
+    case_id = create_response.json()["case_id"]
+
+    from maintenance_triage_copilot.api.routes import cases as cases_route
+
+    monkeypatch.setattr(
+        cases_route,
+        "assess_image_capture",
+        lambda _: [
+            "The panel image is too dark. Move closer or increase lighting before retrying."
+        ],
+    )
+
+    response = technician_client.post(
+        f"/cases/{case_id}/analyze",
+        files={"file": ("panel.png", _valid_png_bytes(), "image/png")},
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["hints"]
+
+
+def test_admin_corpus_reference_and_dashboard(admin_client, monkeypatch) -> None:
+    service = admin_client.app.state.service
+    monkeypatch.setattr(
+        service.state.image_backbone,
+        "encode_raw_image",
+        lambda _: np.full((192,), 0.2, dtype=np.float32),
+    )
+
+    doc_response = admin_client.post(
+        "/corpus/documents",
+        json={
+            "document_id": "admin-doc-1",
+            "source_type": "manual",
+            "title": "Panel Manual",
+            "body": "Inspect breaker alignment and verify lamp state.",
+        },
+    )
+    assert doc_response.status_code == 200
+
+    incident_response = admin_client.post(
+        "/corpus/incidents",
+        json={
+            "incident_id": "admin-inc-1",
+            "title": "Panel alarm case",
+            "summary": "Alarm lamp on and breaker misaligned.",
+            "issue_class": "alarm_lamp",
+            "fix_summary": "Reset lamp and reseat breaker.",
+        },
+    )
+    assert incident_response.status_code == 200
+
+    state_upload = admin_client.post(
+        "/reference-states/upload",
+        files={"file": ("state.png", _valid_png_bytes(), "image/png")},
+        data={
+            "state_label": "normal_state",
+            "description": "Normal green-light panel state.",
+            "caption": "All lights green and breakers aligned.",
+        },
+    )
+    assert state_upload.status_code == 200
+
+    docs_list = admin_client.get("/corpus/documents")
+    assert docs_list.status_code == 200
+    assert docs_list.json()["items"][0]["document_id"] == "admin-doc-1"
+
+    incidents_list = admin_client.get("/corpus/incidents")
+    assert incidents_list.status_code == 200
+    assert incidents_list.json()["items"][0]["incident_id"] == "admin-inc-1"
+
+    states_list = admin_client.get("/reference-states")
+    assert states_list.status_code == 200
+    assert states_list.json()["items"][0]["state_label"] == "normal_state"
+
+    dashboard = admin_client.get("/admin/dashboard")
+    assert dashboard.status_code == 200
+    assert "total_cases" in dashboard.json()
+
+
+def _valid_png_bytes() -> bytes:
+    image = Image.new("RGB", (512, 512), color=(245, 245, 245))
+    for idx in range(0, 512, 32):
+        for y in range(512):
+            image.putpixel((idx, y), (20, 20, 20))
+            image.putpixel((min(idx + 1, 511), y), (20, 20, 20))
+        for x in range(512):
+            image.putpixel((x, idx), (20, 20, 20))
+            image.putpixel((x, min(idx + 1, 511)), (20, 20, 20))
+    buffer = io.BytesIO()
+    image.save(buffer, format="PNG")
+    return buffer.getvalue()

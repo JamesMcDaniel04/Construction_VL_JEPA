@@ -13,6 +13,7 @@ from maintenance_triage_copilot.domain.models import (
     MediaAssetRecord,
     ReferenceState,
     TriageAuditRecord,
+    TriageCase,
     TriageResponse,
 )
 from maintenance_triage_copilot.storage.migrations import run_migrations
@@ -49,6 +50,18 @@ class TriageHistoryRecord(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     request_id = Column(String, nullable=False, index=True)
     response = Column(JSON, nullable=False)
+
+
+class TriageCaseRecordORM(Base):
+    __tablename__ = "triage_cases"
+
+    case_id = Column(String, primary_key=True)
+    organization_id = Column(String, nullable=False, index=True)
+    created_by_user_id = Column(String, nullable=False, index=True)
+    status = Column(String, nullable=False, index=True)
+    created_at = Column(String, nullable=False, index=True)
+    updated_at = Column(String, nullable=False, index=True)
+    payload = Column(JSON, nullable=False)
 
 
 class MediaAssetRecordORM(Base):
@@ -97,15 +110,45 @@ class SqlAlchemyMetadataStore:
         with self.session_factory.begin() as session:
             session.merge(DocumentRecord(document_id=document.document_id, payload=payload))
 
+    def list_documents(self, limit: int, offset: int) -> list[CorpusDocument]:
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(DocumentRecord)
+                .order_by(DocumentRecord.document_id.asc())
+                .offset(offset)
+                .limit(limit)
+            ).all()
+        return [CorpusDocument.model_validate(self._payload(row.payload)) for row in rows]
+
     def add_incident(self, incident: IncidentRecord) -> None:
         payload = incident.model_dump(mode="json")
         with self.session_factory.begin() as session:
             session.merge(IncidentRecordORM(incident_id=incident.incident_id, payload=payload))
 
+    def list_incidents(self, limit: int, offset: int) -> list[IncidentRecord]:
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(IncidentRecordORM)
+                .order_by(IncidentRecordORM.incident_id.asc())
+                .offset(offset)
+                .limit(limit)
+            ).all()
+        return [IncidentRecord.model_validate(self._payload(row.payload)) for row in rows]
+
     def add_reference_state(self, reference_state: ReferenceState) -> None:
         payload = reference_state.model_dump(mode="json")
         with self.session_factory.begin() as session:
             session.merge(ReferenceStateRecord(state_id=reference_state.state_id, payload=payload))
+
+    def list_reference_states(self, limit: int, offset: int) -> list[ReferenceState]:
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(ReferenceStateRecord)
+                .order_by(ReferenceStateRecord.state_id.asc())
+                .offset(offset)
+                .limit(limit)
+            ).all()
+        return [ReferenceState.model_validate(self._payload(row.payload)) for row in rows]
 
     def get_reference_state(self, state_id: str) -> ReferenceState | None:
         with self.session_factory() as session:
@@ -123,6 +166,39 @@ class SqlAlchemyMetadataStore:
                     response=response.model_dump(mode="json"),
                 )
             )
+
+    def save_case(self, triage_case: TriageCase) -> None:
+        payload = triage_case.model_dump(mode="json")
+        with self.session_factory.begin() as session:
+            session.merge(
+                TriageCaseRecordORM(
+                    case_id=triage_case.case_id,
+                    organization_id=triage_case.organization_id,
+                    created_by_user_id=triage_case.created_by_user_id,
+                    status=triage_case.status.value,
+                    created_at=triage_case.created_at.isoformat(),
+                    updated_at=triage_case.updated_at.isoformat(),
+                    payload=payload,
+                )
+            )
+
+    def get_case(self, case_id: str) -> TriageCase | None:
+        with self.session_factory() as session:
+            record = session.get(TriageCaseRecordORM, case_id)
+            if record is None:
+                return None
+            payload = self._payload(record.payload)
+        return TriageCase.model_validate(payload)
+
+    def list_cases(self, limit: int, offset: int) -> list[TriageCase]:
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(TriageCaseRecordORM)
+                .order_by(TriageCaseRecordORM.updated_at.desc())
+                .offset(offset)
+                .limit(limit)
+            ).all()
+        return [TriageCase.model_validate(self._payload(row.payload)) for row in rows]
 
     def add_media_asset(self, asset: MediaAssetRecord) -> None:
         payload = asset.model_dump(mode="json")
@@ -180,6 +256,7 @@ class SqlAlchemyMetadataStore:
             document_count = self._count(session, DocumentRecord)
             incident_count = self._count(session, IncidentRecordORM)
             reference_state_count = self._count(session, ReferenceStateRecord)
+            triage_case_count = self._count(session, TriageCaseRecordORM)
             media_asset_count = self._count(session, MediaAssetRecordORM)
             audit_count = self._count(session, TriageAuditRecordORM)
         return {
@@ -187,6 +264,7 @@ class SqlAlchemyMetadataStore:
             "documents": str(document_count),
             "incidents": str(incident_count),
             "reference_states": str(reference_state_count),
+            "triage_cases": str(triage_case_count),
             "media_assets": str(media_asset_count),
             "triage_audits": str(audit_count),
         }

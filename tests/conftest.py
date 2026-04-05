@@ -157,7 +157,27 @@ def small_config(tmp_path) -> AppConfig:
             video_num_frames=8,
         ),
         policy=PolicyConfig(top_k_issues=3),
-        security=SecurityConfig(service_tokens={"test-client": "secret-token"}),
+        security=SecurityConfig(
+            service_tokens={"test-client": "secret-token"},
+            pilot_users=[
+                {
+                    "user_id": "tech-1",
+                    "token": "technician-token",
+                    "organization_id": "org-1",
+                    "role": "technician",
+                    "display_name": "Alex Technician",
+                    "email": "alex@example.com",
+                },
+                {
+                    "user_id": "admin-1",
+                    "token": "admin-token",
+                    "organization_id": "org-1",
+                    "role": "admin",
+                    "display_name": "Sam Supervisor",
+                    "email": "sam@example.com",
+                },
+            ],
+        ),
         text_encoder=TextEncoderConfig(backend="mock", embedding_dim=192),
         adapter=AdapterConfig(hidden_dim=192, output_dim=192),
         image_backbone=ImageBackboneConfig(
@@ -209,6 +229,22 @@ def client(small_config: AppConfig) -> TestClient:
     app = create_app(small_config)
     client = TestClient(app)
     client.headers.update({"Authorization": "Bearer secret-token"})
+    return client
+
+
+@pytest.fixture
+def technician_client(small_config: AppConfig) -> TestClient:
+    app = create_app(small_config)
+    client = TestClient(app)
+    client.headers.update({"Authorization": "Bearer technician-token"})
+    return client
+
+
+@pytest.fixture
+def admin_client(small_config: AppConfig) -> TestClient:
+    app = create_app(small_config)
+    client = TestClient(app)
+    client.headers.update({"Authorization": "Bearer admin-token"})
     return client
 
 

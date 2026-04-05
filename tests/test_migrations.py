@@ -18,5 +18,6 @@ def test_run_migrations_creates_expected_tables(tmp_path) -> None:
         "media_assets",
         "reference_states",
         "triage_audits",
+        "triage_cases",
         "triage_history",
     }

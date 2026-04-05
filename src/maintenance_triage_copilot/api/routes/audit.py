@@ -6,7 +6,12 @@ from typing import cast
 
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from maintenance_triage_copilot.domain.models import TriageAuditDetail, TriageAuditRecord
+from maintenance_triage_copilot.api.security import require_role
+from maintenance_triage_copilot.domain.models import (
+    TriageAuditDetail,
+    TriageAuditRecord,
+    UserRole,
+)
 
 router = APIRouter(prefix="/audit", tags=["audit"])
 
@@ -17,6 +22,7 @@ async def list_triage_audits(
     limit: int = Query(default=20, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> dict[str, object]:
+    require_role(request, UserRole.admin, UserRole.service)
     items = request.app.state.service.list_triage_audits(limit=limit, offset=offset)
     return {
         "items": [cast(TriageAuditRecord, item).model_dump(mode="json") for item in items],
@@ -27,6 +33,7 @@ async def list_triage_audits(
 
 @router.get("/triage/{audit_id}")
 async def get_triage_audit(audit_id: str, request: Request) -> dict[str, object]:
+    require_role(request, UserRole.admin, UserRole.service)
     detail = cast(
         TriageAuditDetail | None,
         request.app.state.service.get_triage_audit_detail(audit_id),

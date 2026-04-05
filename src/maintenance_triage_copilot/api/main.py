@@ -12,7 +12,10 @@ from maintenance_triage_copilot.api.middleware import (
 )
 from maintenance_triage_copilot.api.routes import (
     audit,
+    auth,
+    cases,
     corpus,
+    dashboard,
     media,
     metrics,
     reference_states,
@@ -20,10 +23,14 @@ from maintenance_triage_copilot.api.routes import (
     triage,
 )
 from maintenance_triage_copilot.config import AppConfig, load_config
+from maintenance_triage_copilot.domain.models import PilotUser
 from maintenance_triage_copilot.encoding.text import MaintenanceTextEncoder
 from maintenance_triage_copilot.models.adapter import VisualTextProjector
 from maintenance_triage_copilot.models.assets import validate_model_assets
-from maintenance_triage_copilot.models.backbones import IJEPAImageAdapter, VJEPAVideoAdapter
+from maintenance_triage_copilot.models.backbones import (
+    IJEPAImageAdapter,
+    VJEPAVideoAdapter,
+)
 from maintenance_triage_copilot.models.policy import CalibratedTriagePolicy
 from maintenance_triage_copilot.retrieval.index import VectorIndex
 from maintenance_triage_copilot.services.triage import AppState, TriageService
@@ -49,12 +56,14 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
         raise RuntimeError("Production mode requires a PostgreSQL database URL")
     if is_production and not cfg.database.qdrant_url:
         raise RuntimeError("Qdrant is required in production mode")
+    pilot_users = [PilotUser.model_validate(item) for item in cfg.security.pilot_users]
     if (
         is_production
         and cfg.security.require_auth_in_production
         and not cfg.security.service_tokens
+        and not pilot_users
     ):
-        raise RuntimeError("Production mode requires bearer service tokens")
+        raise RuntimeError("Production mode requires bearer auth credentials")
     if cfg.policy.require_checkpoint and cfg.policy.checkpoint_path is None:
         raise RuntimeError("Production mode requires a calibrated triage policy checkpoint")
     assets = validate_model_assets(cfg)
@@ -138,12 +147,13 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
             raise RuntimeError("Production mode requires S3-compatible object storage")
         object_store = MemoryObjectStore()
 
-    auth_required = bool(cfg.security.service_tokens) or (
+    auth_required = bool(cfg.security.service_tokens or pilot_users) or (
         is_production and cfg.security.require_auth_in_production
     )
     app.state.service_token_lookup = {
         token: principal for principal, token in cfg.security.service_tokens.items()
     }
+    app.state.pilot_user_lookup = {user.token: user for user in pilot_users}
     app.state.auth_required = auth_required
 
     state = AppState(
@@ -181,8 +191,11 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
         engine=getattr(metadata_store, "engine", None),
     )
 
+    app.include_router(auth.router)
     app.include_router(audit.router)
+    app.include_router(cases.router)
     app.include_router(corpus.router)
+    app.include_router(dashboard.router)
     app.include_router(media.router)
     app.include_router(metrics.router)
     app.include_router(reference_states.router)

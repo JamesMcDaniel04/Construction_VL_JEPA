@@ -1,0 +1,21 @@
+{
+  "expo": {
+    "name": "Maintenance Triage Copilot",
+    "slug": "maintenance-triage-copilot",
+    "scheme": "mtc",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0F1B22"
+      }
+    }
+  }
+}

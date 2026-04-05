@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -27,6 +27,35 @@ class MediaType(StrEnum):
 class AssetType(StrEnum):
     triage_upload = "triage_upload"
     corpus_upload = "corpus_upload"
+    reference_state_upload = "reference_state_upload"
+
+
+class UserRole(StrEnum):
+    technician = "technician"
+    admin = "admin"
+    service = "service"
+
+
+class TriageCaseStatus(StrEnum):
+    draft = "draft"
+    pending_analysis = "pending_analysis"
+    analyzed = "analyzed"
+    escalated = "escalated"
+    archived = "archived"
+
+
+class VisualEvidenceStatus(StrEnum):
+    sufficient = "sufficient"
+    limited = "limited"
+    insufficient = "insufficient"
+
+
+class FeedbackLabel(StrEnum):
+    helpful = "helpful"
+    not_helpful = "not_helpful"
+    wrong_issue = "wrong_issue"
+    missing_issue = "missing_issue"
+    escalated_anyway = "escalated_anyway"
 
 
 class Citation(BaseModel):
@@ -120,13 +149,27 @@ class ReferenceState(TensorPayloadMixin):
     allowed_variance_notes: str | None = None
     media_type: MediaType
     caption: str
+    embedding_values: list[float] | None = None
     metadata: dict[str, str | int | float | bool] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _ensure_reference_payload(self) -> ReferenceState:
-        if not self.has_raw_payload():
-            raise ValueError("ReferenceState requires media_uri or tensor_shape + tensor_values")
+        has_embedding = self.embedding_values is not None
+        has_raw = self.has_raw_payload()
+        if has_embedding == has_raw:
+            raise ValueError(
+                "ReferenceState requires exactly one of embedding_values or "
+                "media_uri / tensor_shape + tensor_values"
+            )
         return self
+
+    def has_precomputed_embedding(self) -> bool:
+        return self.embedding_values is not None
+
+    def load_embedding(self) -> np.ndarray:
+        if self.embedding_values is None:
+            raise ValueError("No precomputed embedding is available")
+        return np.asarray(self.embedding_values, dtype=np.float32)
 
 
 class VisualObservation(TensorPayloadMixin):
@@ -219,6 +262,96 @@ class TriageResponse(BaseModel):
     similar_incidents: list[SimilarIncident]
     escalation_recommendation: str
     evidence_citations: list[Citation]
+    visual_evidence_status: VisualEvidenceStatus = VisualEvidenceStatus.limited
+    uncertainty_summary: str | None = None
+    safety_notices: list[str] = Field(default_factory=list)
+
+
+class PilotUser(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    user_id: str
+    token: str
+    organization_id: str
+    role: UserRole
+    display_name: str
+    email: str | None = None
+
+
+class TriageCaseCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    site_id: str
+    asset_id: str
+    panel_family: str
+    equipment_family: str = "electrical_panel_family_a"
+    panel_id: str | None = None
+    question: str | None = None
+    operator_context: str | None = None
+    expected_state_label: str | None = None
+    metadata: dict[str, str | int | float | bool] = Field(default_factory=dict)
+
+
+class TriageCaseFeedback(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    labels: list[FeedbackLabel] = Field(default_factory=list)
+    comment: str | None = None
+    submitted_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+
+class TriageCase(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    case_id: str
+    organization_id: str
+    created_by_user_id: str
+    created_by_display_name: str
+    role: UserRole
+    site_id: str
+    asset_id: str
+    panel_family: str
+    equipment_family: str = "electrical_panel_family_a"
+    panel_id: str | None = None
+    question: str | None = None
+    operator_context: str | None = None
+    expected_state_label: str | None = None
+    status: TriageCaseStatus = TriageCaseStatus.draft
+    media_asset_id: str | None = None
+    analysis: TriageResponse | None = None
+    feedback: TriageCaseFeedback | None = None
+    latest_audit_id: str | None = None
+    response_time_ms: float | None = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    metadata: dict[str, str | int | float | bool] = Field(default_factory=dict)
+
+
+class TriageCaseSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    case_id: str
+    site_id: str
+    asset_id: str
+    panel_family: str
+    panel_id: str | None = None
+    status: TriageCaseStatus
+    created_at: datetime
+    updated_at: datetime
+    top_issue_class: str | None = None
+    escalation_recommendation: str | None = None
+    helpful: bool | None = None
+
+
+class AdminDashboardMetrics(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    total_cases: int
+    analyzed_cases: int
+    escalated_cases: int
+    helpful_feedback_rate: float | None = None
+    unresolved_cases: int
+    top_issue_classes: list[dict[str, str | int]] = Field(default_factory=list)
 
 
 class MediaAssetRecord(BaseModel):

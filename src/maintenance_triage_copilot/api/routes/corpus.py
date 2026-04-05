@@ -5,13 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Annotated, cast
 
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
 
+from maintenance_triage_copilot.api.security import require_role
 from maintenance_triage_copilot.domain.models import (
     AssetType,
     CorpusDocument,
     CorpusSourceType,
     IncidentRecord,
+    UserRole,
 )
 
 router = APIRouter(prefix="/corpus", tags=["corpus"])
@@ -19,12 +21,44 @@ router = APIRouter(prefix="/corpus", tags=["corpus"])
 
 @router.post("/documents")
 async def add_document(document: CorpusDocument, request: Request) -> dict[str, object]:
+    require_role(request, UserRole.admin, UserRole.service)
     return cast(dict[str, object], request.app.state.service.add_document(document))
 
 
 @router.post("/incidents")
 async def add_incident(incident: IncidentRecord, request: Request) -> dict[str, object]:
+    require_role(request, UserRole.admin, UserRole.service)
     return cast(dict[str, object], request.app.state.service.add_incident(incident))
+
+
+@router.get("/documents")
+async def list_documents(
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, object]:
+    require_role(request, UserRole.admin, UserRole.service)
+    items = request.app.state.service.list_documents(limit=limit, offset=offset)
+    return {
+        "items": [cast(CorpusDocument, item).model_dump(mode="json") for item in items],
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+@router.get("/incidents")
+async def list_incidents(
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> dict[str, object]:
+    require_role(request, UserRole.admin, UserRole.service)
+    items = request.app.state.service.list_incidents(limit=limit, offset=offset)
+    return {
+        "items": [cast(IncidentRecord, item).model_dump(mode="json") for item in items],
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 @router.post(
@@ -47,6 +81,7 @@ async def upload_document(
 
     The file is parsed, chunked, and indexed for retrieval.
     """
+    require_role(request, UserRole.admin, UserRole.service)
     filename = file.filename or "document"
     data = await file.read()
 

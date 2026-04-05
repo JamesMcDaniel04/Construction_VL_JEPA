@@ -1,14 +1,18 @@
 # Maintenance Triage Copilot
 
-API-first vision-language maintenance triage copilot for one electrical-panel family.
+Pilot-ready mobile field-tech troubleshooting product for one electrical-panel family.
 
 ## MVP
 
+- Technician-facing Expo mobile app for capture, triage review, and feedback.
+- Admin web console for corpus upload, reference-state management, and case review.
 - Photos use vendored Meta I-JEPA model slices.
 - Short clips use vendored Meta V-JEPA model slices.
 - Manuals, SOPs, and prior tickets are chunked and indexed for grounded retrieval.
 - OCR-backed ingestion supports scanned PDFs and uploaded image documents.
-- Triage responses return structured issue candidates, panel-state assessment, next steps, similar incidents, and escalation guidance.
+- Triage responses return structured likely issue candidates, panel-state assessment, next inspection steps, similar incidents, escalation guidance, and safety/uncertainty notices.
+- First-class case/session APIs support site, asset, panel-family, media, and technician feedback history.
+- Invited human pilot users are supported alongside service tokens.
 - Metadata persists through SQLAlchemy to the configured database URL instead of an in-memory default.
 - The text encoder requires a real sentence-transformer model in normal app runs. Tests use an explicit `mock` backend instead of a silent fallback.
 - The supported training path in this repo is `mtc-train-adapter` for the visual-text projector. Self-supervised JEPA pretraining is not part of the supported runtime.
@@ -20,23 +24,42 @@ API-first vision-language maintenance triage copilot for one electrical-panel fa
 PYENV_VERSION=3.11.9 python -m pip install -e ".[dev]"
 PYENV_VERSION=3.11.9 python -m pytest -q
 PYENV_VERSION=3.11.9 mtc-api
+npm install
+npm run mobile
+npm run admin
 ```
 
 Development mode can run with SQLite metadata and in-process vector fallback. Production mode requires PostgreSQL, Qdrant, and mounted model assets.
 
 ## Endpoints
 
+- `GET /auth/me`
+- `POST /cases`
+- `POST /cases/{case_id}/analyze`
+- `POST /cases/{case_id}/feedback`
+- `GET /cases`
+- `GET /cases/{case_id}`
 - `POST /corpus/documents`
 - `POST /corpus/incidents`
+- `GET /corpus/documents`
+- `GET /corpus/incidents`
 - `POST /corpus/upload`
 - `POST /media/triage`
 - `POST /media/encode`
 - `POST /reference-states`
+- `POST /reference-states/upload`
+- `GET /reference-states`
+- `GET /admin/dashboard`
 - `POST /triage/analyze`
 - `GET /audit/triage`
 - `GET /audit/triage/{audit_id}`
 - `GET /metrics`
 - `GET /system/health`
+
+## Pilot Surfaces
+
+- [`apps/mobile`](./apps/mobile): React Native + Expo technician app for on-site capture, analysis, retry, and feedback.
+- [`apps/admin`](./apps/admin): React admin console for corpus uploads, reference-state curation, dashboard metrics, and case review.
 
 ## Production Models
 

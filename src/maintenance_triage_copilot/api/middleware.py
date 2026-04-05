@@ -8,6 +8,7 @@ from uuid import uuid4
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
+from maintenance_triage_copilot.domain.models import UserRole
 from maintenance_triage_copilot.telemetry import (
     current_trace_id,
     record_auth_failure,
@@ -21,17 +22,28 @@ _AUTH_EXEMPT_PATHS = {"/system/health"}
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
-    """Require bearer service auth when the app is configured for it."""
+    """Require bearer auth for service tokens and invited pilot users."""
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         if request.url.path in _AUTH_EXEMPT_PATHS:
             request.state.principal = "healthcheck"
+            request.state.principal_type = "service"
+            request.state.role = UserRole.service.value
+            request.state.user_id = "healthcheck"
+            request.state.organization_id = None
+            request.state.display_name = "healthcheck"
             return await call_next(request)
 
-        token_lookup: dict[str, str] = getattr(request.app.state, "service_token_lookup", {})
+        service_lookup: dict[str, str] = getattr(request.app.state, "service_token_lookup", {})
+        pilot_lookup = getattr(request.app.state, "pilot_user_lookup", {})
         auth_required = bool(getattr(request.app.state, "auth_required", False))
-        if not token_lookup and not auth_required:
+        if not service_lookup and not pilot_lookup and not auth_required:
             request.state.principal = "anonymous"
+            request.state.principal_type = "anonymous"
+            request.state.role = "anonymous"
+            request.state.user_id = None
+            request.state.organization_id = None
+            request.state.display_name = "anonymous"
             return await call_next(request)
 
         header = request.headers.get("Authorization", "")
@@ -44,8 +56,9 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             )
 
         token = header.removeprefix("Bearer ").strip()
-        principal = token_lookup.get(token)
-        if principal is None:
+        principal = service_lookup.get(token)
+        pilot_user = pilot_lookup.get(token)
+        if principal is None and pilot_user is None:
             record_auth_failure(request.url.path)
             return Response(
                 content='{"detail":"Invalid bearer token"}',
@@ -53,7 +66,21 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
                 media_type="application/json",
             )
 
-        request.state.principal = principal
+        if pilot_user is not None:
+            request.state.principal = pilot_user.user_id
+            request.state.principal_type = "human"
+            request.state.role = pilot_user.role.value
+            request.state.user_id = pilot_user.user_id
+            request.state.organization_id = pilot_user.organization_id
+            request.state.display_name = pilot_user.display_name
+        else:
+            assert principal is not None
+            request.state.principal = principal
+            request.state.principal_type = "service"
+            request.state.role = UserRole.service.value
+            request.state.user_id = principal
+            request.state.organization_id = None
+            request.state.display_name = principal
         return await call_next(request)
 
 
@@ -68,6 +95,8 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
         duration_seconds = time.perf_counter() - start
         trace_id = current_trace_id()
         principal = getattr(request.state, "principal", "unknown")
+        principal_type = getattr(request.state, "principal_type", "unknown")
+        role = getattr(request.state, "role", "unknown")
 
         record_request(request.method, request.url.path, response.status_code, duration_seconds)
         log.info(
@@ -77,6 +106,8 @@ class RequestContextMiddleware(BaseHTTPMiddleware):
                 "request_id": request_id,
                 "trace_id": trace_id or "",
                 "principal": principal,
+                "principal_type": principal_type,
+                "role": role,
                 "method": request.method,
                 "path": request.url.path,
                 "status": response.status_code,

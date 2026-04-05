@@ -12,9 +12,11 @@ import torch
 
 from maintenance_triage_copilot.config import AppConfig
 from maintenance_triage_copilot.domain.models import (
+    AdminDashboardMetrics,
     AssetType,
     Citation,
     CorpusDocument,
+    FeedbackLabel,
     IncidentRecord,
     IssueCandidate,
     MediaAssetRecord,
@@ -26,8 +28,14 @@ from maintenance_triage_copilot.domain.models import (
     StateAssessment,
     TriageAuditDetail,
     TriageAuditRecord,
+    TriageCase,
+    TriageCaseCreateRequest,
+    TriageCaseFeedback,
+    TriageCaseStatus,
     TriageRequest,
     TriageResponse,
+    UserRole,
+    VisualEvidenceStatus,
     VisualObservation,
 )
 from maintenance_triage_copilot.encoding.text import MaintenanceTextEncoder
@@ -82,6 +90,9 @@ class TriageService:
             )
         return {"status": "indexed", "document_id": document.document_id, "chunks": len(chunks)}
 
+    def list_documents(self, *, limit: int, offset: int) -> list[CorpusDocument]:
+        return self.state.metadata_store.list_documents(limit, offset)
+
     def add_incident(self, incident: IncidentRecord) -> dict[str, Any]:
         self.state.metadata_store.add_incident(incident)
         payload = incident.model_dump()
@@ -90,12 +101,18 @@ class TriageService:
         self.state.vector_index.upsert("incidents", incident.incident_id, embedding, payload)
         return {"status": "indexed", "incident_id": incident.incident_id}
 
+    def list_incidents(self, *, limit: int, offset: int) -> list[IncidentRecord]:
+        return self.state.metadata_store.list_incidents(limit, offset)
+
     def add_reference_state(self, reference_state: ReferenceState) -> dict[str, Any]:
         self.state.metadata_store.add_reference_state(reference_state)
         embedding = self._encode_visual(reference_state)
         payload = reference_state.model_dump()
         self.state.vector_index.upsert("states", reference_state.state_id, embedding, payload)
         return {"status": "indexed", "state_id": reference_state.state_id}
+
+    def list_reference_states(self, *, limit: int, offset: int) -> list[ReferenceState]:
+        return self.state.metadata_store.list_reference_states(limit, offset)
 
     def analyze(self, request: TriageRequest) -> TriageResponse:
         observation = request.observation
@@ -140,9 +157,244 @@ class TriageService:
             similar_incidents=similar_incidents,
             escalation_recommendation=escalation,
             evidence_citations=citations,
+            visual_evidence_status=self._build_visual_evidence_status(
+                issue_candidates,
+                state_assessment,
+                similar_incidents,
+            ),
+            uncertainty_summary=self._build_uncertainty_summary(
+                issue_candidates,
+                state_assessment,
+                similar_incidents,
+            ),
+            safety_notices=self._build_safety_notices(),
         )
         self.state.metadata_store.record_triage(observation.observation_id, response)
         return response
+
+    def create_case(
+        self,
+        request: TriageCaseCreateRequest,
+        *,
+        organization_id: str,
+        user_id: str,
+        display_name: str,
+        role: UserRole,
+    ) -> TriageCase:
+        triage_case = TriageCase(
+            case_id=f"case-{uuid4().hex[:16]}",
+            organization_id=organization_id,
+            created_by_user_id=user_id,
+            created_by_display_name=display_name,
+            role=role,
+            site_id=request.site_id,
+            asset_id=request.asset_id,
+            panel_family=request.panel_family,
+            equipment_family=request.equipment_family,
+            panel_id=request.panel_id,
+            question=request.question,
+            operator_context=request.operator_context,
+            expected_state_label=request.expected_state_label,
+            status=TriageCaseStatus.draft,
+            metadata=request.metadata,
+        )
+        self.state.metadata_store.save_case(triage_case)
+        return triage_case
+
+    def get_case(self, case_id: str) -> TriageCase | None:
+        return self.state.metadata_store.get_case(case_id)
+
+    def list_cases(
+        self,
+        *,
+        limit: int,
+        offset: int,
+        organization_id: str | None,
+        user_id: str | None,
+        role: UserRole,
+    ) -> list[TriageCase]:
+        cases = self.state.metadata_store.list_cases(max(limit + offset, 200), 0)
+        filtered = [
+            item
+            for item in cases
+            if organization_id is None or item.organization_id == organization_id
+        ]
+        if role == UserRole.technician and user_id is not None:
+            filtered = [item for item in filtered if item.created_by_user_id == user_id]
+        return filtered[offset : offset + limit]
+
+    @staticmethod
+    def case_summary(triage_case: TriageCase) -> dict[str, Any]:
+        helpful = None
+        if triage_case.feedback is not None:
+            helpful = FeedbackLabel.helpful in triage_case.feedback.labels
+        top_issue_class = None
+        escalation = None
+        if triage_case.analysis is not None:
+            top_issue_class = (
+                triage_case.analysis.issue_candidates[0].issue_class
+                if triage_case.analysis.issue_candidates
+                else None
+            )
+            escalation = triage_case.analysis.escalation_recommendation
+        return {
+            "case_id": triage_case.case_id,
+            "site_id": triage_case.site_id,
+            "asset_id": triage_case.asset_id,
+            "panel_family": triage_case.panel_family,
+            "panel_id": triage_case.panel_id,
+            "status": triage_case.status,
+            "created_at": triage_case.created_at,
+            "updated_at": triage_case.updated_at,
+            "top_issue_class": top_issue_class,
+            "escalation_recommendation": escalation,
+            "helpful": helpful,
+        }
+
+    def analyze_case(
+        self,
+        *,
+        triage_case: TriageCase,
+        filename: str,
+        content_type: str,
+        data: bytes,
+        request_id: str,
+        principal: str,
+        trace_id: str | None,
+    ) -> tuple[TriageCase, TriageAuditRecord]:
+        pending_case = triage_case.model_copy(
+            update={
+                "status": TriageCaseStatus.pending_analysis,
+                "updated_at": datetime.now(tz=UTC),
+            }
+        )
+        self.state.metadata_store.save_case(pending_case)
+        media_type = self._media_type_from_upload(filename=filename, content_type=content_type)
+        started = datetime.now(tz=UTC)
+        stored_asset = self.persist_uploaded_asset(
+            asset_type=AssetType.triage_upload,
+            filename=filename,
+            content_type=content_type,
+            data=data,
+            metadata={
+                "case_id": triage_case.case_id,
+                "equipment_family": triage_case.equipment_family,
+                "panel_id": triage_case.panel_id or "",
+            },
+        )
+        if media_type == MediaType.image:
+            embedding = self.state.image_backbone.encode_raw_image(data)
+        else:
+            embedding = self.state.video_backbone.encode_raw_video(data)
+        observation = VisualObservation(
+            observation_id=f"obs-{uuid4().hex[:16]}",
+            equipment_family=triage_case.equipment_family,
+            panel_id=triage_case.panel_id,
+            media_type=media_type,
+            embedding_values=embedding.tolist(),
+            metadata={
+                "site_id": triage_case.site_id,
+                "asset_id": triage_case.asset_id,
+                "panel_family": triage_case.panel_family,
+            },
+        )
+        triage_request = TriageRequest(
+            observation=observation,
+            question=triage_case.question,
+            operator_context=triage_case.operator_context,
+            expected_state_label=triage_case.expected_state_label,
+        )
+        triage_response = self.analyze(triage_request)
+        audit = self.record_triage_audit(
+            request_id=request_id,
+            principal=principal,
+            trace_id=trace_id,
+            request_payload=triage_request,
+            response_payload=triage_response,
+            linked_asset_ids=[stored_asset.asset_id],
+            metadata={"route": "/cases/analyze", "case_id": triage_case.case_id},
+        )
+        finished = datetime.now(tz=UTC)
+        updated_case = pending_case.model_copy(
+            update={
+                "status": (
+                    TriageCaseStatus.escalated
+                    if triage_response.escalation_recommendation != "proceed_with_guided_inspection"
+                    else TriageCaseStatus.analyzed
+                ),
+                "media_asset_id": stored_asset.asset_id,
+                "analysis": triage_response,
+                "latest_audit_id": audit.audit_id,
+                "response_time_ms": (finished - started).total_seconds() * 1000.0,
+                "updated_at": finished,
+            }
+        )
+        self.state.metadata_store.save_case(updated_case)
+        return updated_case, audit
+
+    def submit_case_feedback(
+        self,
+        case_id: str,
+        *,
+        labels: list[FeedbackLabel],
+        comment: str | None,
+    ) -> TriageCase | None:
+        existing = self.state.metadata_store.get_case(case_id)
+        if existing is None:
+            return None
+        updated = existing.model_copy(
+            update={
+                "feedback": TriageCaseFeedback(labels=labels, comment=comment),
+                "updated_at": datetime.now(tz=UTC),
+            }
+        )
+        self.state.metadata_store.save_case(updated)
+        return updated
+
+    def admin_dashboard(self, *, organization_id: str | None = None) -> AdminDashboardMetrics:
+        cases = self.state.metadata_store.list_cases(5000, 0)
+        if organization_id is not None:
+            cases = [item for item in cases if item.organization_id == organization_id]
+        analyzed = [item for item in cases if item.analysis is not None]
+        escalated = [
+            item for item in analyzed if item.status == TriageCaseStatus.escalated
+        ]
+        helpful_cases = [
+            item
+            for item in cases
+            if item.feedback is not None and FeedbackLabel.helpful in item.feedback.labels
+        ]
+        unresolved = [
+            item
+            for item in cases
+            if item.status in {TriageCaseStatus.draft, TriageCaseStatus.pending_analysis}
+        ]
+        issue_counts: dict[str, int] = {}
+        for item in analyzed:
+            if not item.analysis or not item.analysis.issue_candidates:
+                continue
+            issue = item.analysis.issue_candidates[0].issue_class
+            issue_counts[issue] = issue_counts.get(issue, 0) + 1
+        top_issue_classes: list[dict[str, str | int]] = [
+            {"issue_class": key, "count": value}
+            for key, value in sorted(
+                issue_counts.items(),
+                key=lambda pair: pair[1],
+                reverse=True,
+            )[:5]
+        ]
+        helpful_rate = None
+        feedback_cases = [item for item in cases if item.feedback is not None]
+        if feedback_cases:
+            helpful_rate = len(helpful_cases) / len(feedback_cases)
+        return AdminDashboardMetrics(
+            total_cases=len(cases),
+            analyzed_cases=len(analyzed),
+            escalated_cases=len(escalated),
+            helpful_feedback_rate=helpful_rate,
+            unresolved_cases=len(unresolved),
+            top_issue_classes=top_issue_classes,
+        )
 
     def persist_uploaded_asset(
         self,
@@ -264,7 +516,7 @@ class TriageService:
 
     def _encode_visual(self, media: ReferenceState | VisualObservation) -> np.ndarray:
         with trace_operation("visual.encode"):
-            if isinstance(media, VisualObservation) and media.has_precomputed_embedding():
+            if media.has_precomputed_embedding():
                 return self._normalize_embedding(media.load_embedding())
             if media.media_type == MediaType.image:
                 return self._normalize_embedding(
@@ -518,6 +770,79 @@ class TriageService:
         ):
             return "escalate_for_visual_review"
         return action
+
+    def _build_visual_evidence_status(
+        self,
+        issue_candidates: list[IssueCandidate],
+        state_assessment: StateAssessment,
+        similar_incidents: list[SimilarIncident],
+    ) -> VisualEvidenceStatus:
+        top_issue_confidence = issue_candidates[0].confidence if issue_candidates else 0.0
+        if state_assessment.confidence < 0.25 and top_issue_confidence < 0.45:
+            return VisualEvidenceStatus.insufficient
+        if (
+            state_assessment.confidence < 0.55
+            or top_issue_confidence < 0.65
+            or not similar_incidents
+        ):
+            return VisualEvidenceStatus.limited
+        return VisualEvidenceStatus.sufficient
+
+    def _build_uncertainty_summary(
+        self,
+        issue_candidates: list[IssueCandidate],
+        state_assessment: StateAssessment,
+        similar_incidents: list[SimilarIncident],
+    ) -> str:
+        evidence_status = self._build_visual_evidence_status(
+            issue_candidates,
+            state_assessment,
+            similar_incidents,
+        )
+        if evidence_status == VisualEvidenceStatus.sufficient:
+            return (
+                "Visual evidence supports a grounded shortlist, but technicians should still "
+                "verify with measurement and standard safety procedure."
+            )
+        if evidence_status == VisualEvidenceStatus.insufficient:
+            return (
+                "Visual evidence is insufficient for a reliable panel-only triage result. "
+                "Use measurement, manual inspection, or escalation before acting."
+            )
+        return (
+            "Visual evidence is directionally useful but incomplete. Hidden electrical faults "
+            "may not be visible in a photo or short clip."
+        )
+
+    @staticmethod
+    def _build_safety_notices() -> list[str]:
+        return [
+            (
+                "This tool suggests likely issue candidates and next inspection steps, "
+                "not a definitive diagnosis."
+            ),
+            (
+                "Follow lockout/tagout, measurement procedure, and site safety requirements "
+                "before acting."
+            ),
+            (
+                "Escalate when the visual evidence is limited or the observed condition "
+                "could involve invisible electrical faults."
+            ),
+        ]
+
+    @staticmethod
+    def _media_type_from_upload(*, filename: str, content_type: str) -> MediaType:
+        lower_name = filename.lower()
+        if content_type.startswith("image/") or lower_name.endswith(
+            (".jpg", ".jpeg", ".png", ".webp")
+        ):
+            return MediaType.image
+        if content_type.startswith("video/") or lower_name.endswith(
+            (".mp4", ".mov", ".avi", ".mkv")
+        ):
+            return MediaType.video
+        raise ValueError(f"Unsupported upload type: {content_type or filename}")
 
     @staticmethod
     def _normalize_embedding(vector: np.ndarray) -> np.ndarray:

@@ -8,6 +8,7 @@ from maintenance_triage_copilot.domain.models import (
     MediaAssetRecord,
     ReferenceState,
     TriageAuditRecord,
+    TriageCase,
     TriageResponse,
 )
 
@@ -17,6 +18,7 @@ class MemoryMetadataStore:
         self.documents: dict[str, CorpusDocument] = {}
         self.incidents: dict[str, IncidentRecord] = {}
         self.reference_states: dict[str, ReferenceState] = {}
+        self.triage_cases: dict[str, TriageCase] = {}
         self.media_assets: dict[str, MediaAssetRecord] = {}
         self.triage_audits: dict[str, TriageAuditRecord] = {}
         self.triage_history: list[dict[str, object]] = []
@@ -24,17 +26,43 @@ class MemoryMetadataStore:
     def add_document(self, document: CorpusDocument) -> None:
         self.documents[document.document_id] = document
 
+    def list_documents(self, limit: int, offset: int) -> list[CorpusDocument]:
+        items = sorted(self.documents.values(), key=lambda item: item.document_id)
+        return items[offset : offset + limit]
+
     def add_incident(self, incident: IncidentRecord) -> None:
         self.incidents[incident.incident_id] = incident
 
+    def list_incidents(self, limit: int, offset: int) -> list[IncidentRecord]:
+        items = sorted(self.incidents.values(), key=lambda item: item.incident_id)
+        return items[offset : offset + limit]
+
     def add_reference_state(self, reference_state: ReferenceState) -> None:
         self.reference_states[reference_state.state_id] = reference_state
+
+    def list_reference_states(self, limit: int, offset: int) -> list[ReferenceState]:
+        items = sorted(self.reference_states.values(), key=lambda item: item.state_id)
+        return items[offset : offset + limit]
 
     def get_reference_state(self, state_id: str) -> ReferenceState | None:
         return self.reference_states.get(state_id)
 
     def record_triage(self, request_id: str, response: TriageResponse) -> None:
         self.triage_history.append({"request_id": request_id, "response": response.model_dump()})
+
+    def save_case(self, triage_case: TriageCase) -> None:
+        self.triage_cases[triage_case.case_id] = triage_case
+
+    def get_case(self, case_id: str) -> TriageCase | None:
+        return self.triage_cases.get(case_id)
+
+    def list_cases(self, limit: int, offset: int) -> list[TriageCase]:
+        items = sorted(
+            self.triage_cases.values(),
+            key=lambda item: item.updated_at,
+            reverse=True,
+        )
+        return items[offset : offset + limit]
 
     def add_media_asset(self, asset: MediaAssetRecord) -> None:
         self.media_assets[asset.asset_id] = asset
@@ -62,6 +90,7 @@ class MemoryMetadataStore:
             "documents": str(len(self.documents)),
             "incidents": str(len(self.incidents)),
             "reference_states": str(len(self.reference_states)),
+            "triage_cases": str(len(self.triage_cases)),
             "media_assets": str(len(self.media_assets)),
             "triage_audits": str(len(self.triage_audits)),
         }

@@ -1,0 +1,14 @@
+{
+  "name": "maintenance-triage-copilot-workspace",
+  "private": true,
+  "workspaces": [
+    "apps/mobile",
+    "apps/admin"
+  ],
+  "scripts": {
+    "mobile": "npm --workspace apps/mobile run start",
+    "admin": "npm --workspace apps/admin run dev",
+    "mobile:typecheck": "npm --workspace apps/mobile run typecheck",
+    "admin:build": "npm --workspace apps/admin run build"
+  }
+}

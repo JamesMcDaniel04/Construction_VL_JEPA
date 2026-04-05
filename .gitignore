@@ -16,6 +16,15 @@ build/
 .ruff_cache/
 .pytest_cache/
 
+# Node / frontend
+node_modules/
+.expo/
+.expo-shared/
+web-build/
+apps/*/dist/
+apps/*/node_modules/
+coverage/
+
 # Virtual environments
 .venv/
 venv/

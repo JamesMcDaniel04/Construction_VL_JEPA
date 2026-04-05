@@ -6,6 +6,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import cast
 
 import yaml  # type: ignore[import-untyped]
 
@@ -81,6 +82,7 @@ class AdapterConfig:
 @dataclass
 class SecurityConfig:
     service_tokens: dict[str, str] = field(default_factory=dict)
+    pilot_users: list[dict[str, object]] = field(default_factory=list)
     require_auth_in_production: bool = True
 
 
@@ -184,6 +186,16 @@ def _apply_env_overrides(cfg: AppConfig) -> None:
         cfg.security.service_tokens = {
             str(key): str(value) for key, value in json.loads(tokens_json).items()
         }
+    pilot_users_json = os.getenv("MTC_PILOT_USERS_JSON")
+    if pilot_users_json:
+        raw_users = json.loads(pilot_users_json)
+        if not isinstance(raw_users, list):
+            raise ValueError("MTC_PILOT_USERS_JSON must decode to a list")
+        cfg.security.pilot_users = [
+            {str(key): value for key, value in cast(dict[str, object], item).items()}
+            for item in raw_users
+            if isinstance(item, dict)
+        ]
 
     access_key = os.getenv("MTC_OBJECT_STORE_ACCESS_KEY")
     if access_key:
