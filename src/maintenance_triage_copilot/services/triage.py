@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from maintenance_triage_copilot.domain.models import (
     AssetType,
     Citation,
     CorpusDocument,
+    CorpusSourceType,
     FeedbackLabel,
     IncidentRecord,
     IssueCandidate,
@@ -54,6 +56,55 @@ from maintenance_triage_copilot.retrieval.index import SearchHit, VectorIndex
 from maintenance_triage_copilot.storage.object_store import ObjectStore
 from maintenance_triage_copilot.storage.protocol import MetadataStore
 from maintenance_triage_copilot.telemetry import trace_operation
+
+_STEP_PREFIX_RE = re.compile(
+    r"^\s*(?:[-*•]+|\d+[.)]|step\s+\d+[:.)]?|[a-z][.)])\s*",
+    re.IGNORECASE,
+)
+_STEP_CONDITIONAL_RE = re.compile(
+    r"^(?:if|when|once|after|before)\b[^,]{0,120},\s*(.+)$",
+    re.IGNORECASE,
+)
+_STEP_CLAUSE_SPLIT_RE = re.compile(
+    r"\s*(?:\n+|(?<=[.!?;])\s+|,\s+(?=(?:then|after|before|if|verify|inspect|check|measure|tighten|reset|replace|confirm|record|test|ensure|isolate|review|escalate)\b))",
+    re.IGNORECASE,
+)
+_ACTIONABLE_PREFIXES = (
+    "inspect",
+    "check",
+    "verify",
+    "measure",
+    "reset",
+    "replace",
+    "tighten",
+    "confirm",
+    "record",
+    "test",
+    "ensure",
+    "isolate",
+    "review",
+    "observe",
+    "monitor",
+    "align",
+    "reseat",
+    "re-seat",
+    "restore",
+    "de-energize",
+    "energize",
+    "re-energize",
+    "lock out",
+    "tag out",
+    "photograph",
+    "scan",
+    "compare",
+    "open",
+    "close",
+    "trace",
+    "note",
+    "escalate",
+)
+_REFERENCE_STATE_ISSUE_SUPPORT = 0.75
+_INCIDENT_LINKED_STEP_SUPPORT = 0.08
 
 
 @dataclass
@@ -199,7 +250,7 @@ class TriageService:
             document_hits,
         )
         issue_candidates = self._build_issue_candidates(issue_evidence)
-        next_steps = self._build_next_steps(document_hits)
+        next_steps = self._build_next_steps(document_hits, incident_hits=incident_hits)
         similar_incidents = self._build_similar_incidents(incident_hits)
         citations = self._collect_citations(document_hits, next_steps)
         escalation = self._build_escalation(
@@ -709,6 +760,25 @@ class TriageService:
                     f"Retrieved supporting document chunk '{hit.payload['title']}'.",
                 )
 
+        matched_state = self.state.metadata_store.get_reference_state(
+            state_assessment.matched_state_id or ""
+        )
+        if matched_state is not None:
+            issue_class = str(matched_state.metadata.get("issue_class", "")).strip()
+            if issue_class:
+                features = ensure(issue_class)
+                support = state_assessment.confidence * _REFERENCE_STATE_ISSUE_SUPPORT
+                features["document_sum"] += support
+                features["document_max"] = max(features["document_max"], support)
+                features["document_count"] += 1.0
+                rationales.setdefault(
+                    issue_class,
+                    (
+                        f"Matched curated reference state '{matched_state.state_label}' "
+                        "associated with this issue class."
+                    ),
+                )
+
         return [
             IssueEvidence(
                 issue_class=issue_class,
@@ -735,28 +805,119 @@ class TriageService:
             for issue_class, confidence, rationale in ranked
         ]
 
-    def _build_next_steps(self, document_hits: list[SearchHit]) -> list[NextStep]:
+    def _build_next_steps(
+        self,
+        document_hits: list[SearchHit],
+        *,
+        incident_hits: list[SearchHit] | None = None,
+    ) -> list[NextStep]:
         steps: list[NextStep] = []
+        seen: set[str] = set()
+        document_lookup = {
+            document.document_id: document
+            for document in self.list_documents(limit=10_000, offset=0)
+        }
+        for document_id, title, source_type, source_text, chunk_id, base_score in (
+            self._next_step_document_candidates(
+                document_lookup,
+                document_hits,
+                incident_hits or [],
+            )
+        ):
+            extracted_steps = self._extract_next_step_candidates(
+                source_text,
+                source_type=source_type,
+            )
+            if not extracted_steps:
+                fallback = self._fallback_next_step(title, source_type)
+                if fallback:
+                    extracted_steps = [fallback]
+
+            for step_index, step_text in enumerate(extracted_steps):
+                normalized = self._normalize_step_key(step_text)
+                if not normalized or normalized in seen:
+                    continue
+                seen.add(normalized)
+                confidence = max(
+                    0.05,
+                    min(
+                        1.0,
+                        base_score
+                        + self._source_type_step_bonus(source_type)
+                        - (step_index * 0.04),
+                    ),
+                )
+                steps.append(
+                    NextStep(
+                        step=step_text,
+                        confidence=round(confidence, 6),
+                        citations=[
+                            Citation(
+                                document_id=document_id,
+                                title=title,
+                                source_type=source_type,
+                                chunk_id=chunk_id,
+                                snippet=self._citation_snippet(step_text, source_text),
+                            )
+                        ],
+                    )
+                )
+                if len(steps) >= self.state.config.triage.top_k_steps:
+                    return steps
+        return steps
+
+    def _next_step_document_candidates(
+        self,
+        document_lookup: dict[str, CorpusDocument],
+        document_hits: list[SearchHit],
+        incident_hits: list[SearchHit],
+    ) -> list[tuple[str, str, CorpusSourceType, str, str | None, float]]:
+        candidates: list[tuple[str, str, CorpusSourceType, str, str | None, float]] = []
+        seen: set[str] = set()
+
+        for hit in incident_hits:
+            for linked_document_id in hit.payload.get("linked_document_ids", []):
+                document_id = str(linked_document_id)
+                document = document_lookup.get(document_id)
+                if document is None or document_id in seen:
+                    continue
+                seen.add(document_id)
+                candidates.append(
+                    (
+                        document_id,
+                        document.title,
+                        document.source_type,
+                        document.body,
+                        None,
+                        min(1.0, hit.score + _INCIDENT_LINKED_STEP_SUPPORT),
+                    )
+                )
+
         for hit in document_hits:
-            text = str(hit.payload["text"]).strip().replace("\n", " ")
-            steps.append(
-                NextStep(
-                    step=text[:180],
-                    confidence=hit.score,
-                    citations=[
-                        Citation(
-                            document_id=hit.payload["document_id"],
-                            title=hit.payload["title"],
-                            source_type=hit.payload["source_type"],
-                            chunk_id=hit.payload["chunk_id"],
-                            snippet=text[:120],
-                        )
-                    ],
+            document_id = str(hit.payload["document_id"])
+            if document_id in seen:
+                continue
+            seen.add(document_id)
+            document = document_lookup.get(document_id)
+            source_type = (
+                document.source_type
+                if document is not None
+                else CorpusSourceType(str(hit.payload["source_type"]))
+            )
+            source_text = document.body if document is not None else str(hit.payload["text"])
+            title = document.title if document is not None else str(hit.payload["title"])
+            candidates.append(
+                (
+                    document_id,
+                    title,
+                    source_type,
+                    source_text,
+                    str(hit.payload["chunk_id"]),
+                    hit.score,
                 )
             )
-            if len(steps) >= self.state.config.triage.top_k_steps:
-                break
-        return steps
+
+        return candidates
 
     def _build_similar_incidents(self, incident_hits: list[SearchHit]) -> list[SimilarIncident]:
         results: list[SimilarIncident] = []
@@ -826,7 +987,7 @@ class TriageService:
             )
         if (
             action == "proceed_with_guided_inspection"
-            and risk < self.state.config.triage.escalation_threshold
+            and risk >= self.state.config.triage.escalation_threshold
         ):
             return "escalate_for_visual_review"
         return action
@@ -890,6 +1051,105 @@ class TriageService:
                 "could involve invisible electrical faults."
             ),
         ]
+
+    def _extract_next_step_candidates(
+        self,
+        text: str,
+        *,
+        source_type: CorpusSourceType,
+    ) -> list[str]:
+        normalized = text.replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not normalized:
+            return []
+
+        candidates: list[str] = []
+        for fragment in _STEP_CLAUSE_SPLIT_RE.split(normalized):
+            cleaned = self._clean_step_fragment(fragment)
+            if not cleaned:
+                continue
+            if self._looks_actionable_step(cleaned, source_type=source_type):
+                candidates.append(cleaned)
+
+        if candidates:
+            return candidates
+
+        if source_type == CorpusSourceType.sop:
+            fallback_sentences = [
+                self._clean_step_fragment(sentence)
+                for sentence in re.split(r"(?<=[.!?;])\s+", normalized)
+            ]
+            return [sentence for sentence in fallback_sentences if sentence]
+        return []
+
+    def _clean_step_fragment(self, text: str) -> str:
+        cleaned = _STEP_PREFIX_RE.sub("", text).strip()
+        cleaned = re.sub(r"\s+", " ", cleaned)
+        conditional_match = _STEP_CONDITIONAL_RE.match(cleaned)
+        if conditional_match:
+            candidate = conditional_match.group(1).strip()
+            if self._looks_actionable_step(candidate, source_type=CorpusSourceType.manual):
+                cleaned = candidate
+        cleaned = cleaned.rstrip(" ;,.")
+        if not cleaned:
+            return ""
+        if len(cleaned) > 180:
+            cut = cleaned[:180]
+            if " " in cut:
+                cut = cut.rsplit(" ", 1)[0]
+            cleaned = cut.rstrip(" ;,.")
+        return cleaned[:1].upper() + cleaned[1:]
+
+    def _looks_actionable_step(
+        self,
+        text: str,
+        *,
+        source_type: CorpusSourceType,
+    ) -> bool:
+        lowered = text.strip().lower()
+        if not lowered:
+            return False
+        if (
+            source_type in {CorpusSourceType.ticket, CorpusSourceType.repair_note}
+            and len(lowered) < 18
+        ):
+            return False
+        for prefix in _ACTIONABLE_PREFIXES:
+            if lowered.startswith(prefix + " ") or lowered == prefix:
+                return True
+        return lowered.startswith("do not ")
+
+    @staticmethod
+    def _source_type_step_bonus(source_type: CorpusSourceType) -> float:
+        bonuses = {
+            CorpusSourceType.sop: 0.08,
+            CorpusSourceType.manual: 0.04,
+            CorpusSourceType.repair_note: 0.02,
+            CorpusSourceType.ticket: 0.0,
+        }
+        return bonuses.get(source_type, 0.0)
+
+    @staticmethod
+    def _normalize_step_key(text: str) -> str:
+        return re.sub(r"[^a-z0-9]+", " ", text.lower()).strip()
+
+    @staticmethod
+    def _citation_snippet(step_text: str, source_text: str) -> str:
+        normalized_source = source_text.replace("\n", " ").strip()
+        if len(normalized_source) <= 120:
+            return normalized_source
+        lowered_step = step_text.lower()
+        lowered_source = normalized_source.lower()
+        start = lowered_source.find(lowered_step[:30].lower())
+        if start < 0:
+            return normalized_source[:120].rstrip()
+        end = min(len(normalized_source), start + 120)
+        return normalized_source[start:end].rstrip()
+
+    @staticmethod
+    def _fallback_next_step(title: str, source_type: CorpusSourceType) -> str | None:
+        if source_type == CorpusSourceType.ticket:
+            return None
+        return f"Review {title} for the next inspection step related to the current panel state"
 
     @staticmethod
     def _media_type_from_upload(*, filename: str, content_type: str) -> MediaType:

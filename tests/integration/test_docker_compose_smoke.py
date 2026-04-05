@@ -31,6 +31,7 @@ def _free_port() -> int:
 
 
 def _prepare_smoke_assets(model_dir: Path) -> None:
+    torch.manual_seed(0)
     text_dir = model_dir / "text-encoder"
     text_dir.mkdir(parents=True, exist_ok=True)
     projector_path = model_dir / "projector.pt"

@@ -35,6 +35,7 @@ from maintenance_triage_copilot.vendor.meta_vjepa import VideoVisionTransformer
 
 
 def _prepare_model_assets(model_dir) -> None:
+    torch.manual_seed(0)
     text_dir = model_dir / "text-encoder"
     text_dir.mkdir(parents=True, exist_ok=True)
     (text_dir / "config.json").write_text(json.dumps({"backend": "mock"}))

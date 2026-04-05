@@ -42,6 +42,7 @@ def main() -> None:
     output_dir = Path(args.output)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    bundle_profile = _validate_bundle(bundle)
     cfg = load_config(args.config)
     policy_checkpoint = _prepare_policy_checkpoint(bundle, output_dir)
     if policy_checkpoint is not None:
@@ -50,6 +51,7 @@ def main() -> None:
     service = _build_service(cfg)
     _index_bundle(service, bundle)
     summary, per_case = _run_holdout(service, bundle)
+    summary["bundle_profile"] = bundle_profile
     summary["policy"] = {
         "checkpoint_path": cfg.policy.checkpoint_path,
         "metadata": service.state.triage_policy.metadata,
@@ -104,10 +106,14 @@ def _build_service(cfg) -> TriageService:
         hidden_dim=cfg.adapter.hidden_dim,
         output_dim=cfg.adapter.output_dim,
     )
-    if cfg.adapter.checkpoint_path:
-        import torch
+    import torch
 
+    if cfg.adapter.checkpoint_path:
         projector.load_state_dict(torch.load(cfg.adapter.checkpoint_path, map_location="cpu"))
+    else:
+        with torch.no_grad():
+            for parameter in projector.parameters():
+                parameter.zero_()
     projector.eval()
 
     triage_policy = (
@@ -165,6 +171,8 @@ def _run_holdout(
     similar_incident_hits = 0
     citation_precision: list[float] = []
     citation_recall: list[float] = []
+    step_precision: list[float] = []
+    step_recall: list[float] = []
 
     for row in rows:
         request = TriageRequest.model_validate(_resolve_media_paths(row["request"], bundle))
@@ -174,18 +182,30 @@ def _run_holdout(
         latencies_ms.append(latency_ms)
 
         expected_issue = row.get("expected_issue_class")
-        expected_state_label = row.get("expected_state_label")
+        expected_state_label = row.get(
+            "expected_matched_state_label",
+            row.get("expected_state_label"),
+        )
+        request_expected_state_label = request.expected_state_label
         expected_match = row.get("expected_matches_expected")
         expected_escalation = row.get("expected_escalation")
         expected_incident_ids = set(row.get("expected_incident_ids", []))
         expected_citation_doc_ids = set(row.get("expected_citation_document_ids", []))
+        expected_step_phrases = [
+            str(item) for item in row.get("expected_step_phrases", []) if str(item).strip()
+        ]
 
         predicted_issue = (
             response.issue_candidates[0].issue_class if response.issue_candidates else None
         )
         predicted_issues = [item.issue_class for item in response.issue_candidates[:3]]
         predicted_incidents = {item.incident_id for item in response.similar_incidents[:3]}
-        predicted_citation_doc_ids = {item.document_id for item in response.evidence_citations[:3]}
+        predicted_steps = [item.step for item in response.next_steps[:3]]
+        predicted_step_citation_doc_ids = {
+            citation.document_id
+            for next_step in response.next_steps[:3]
+            for citation in next_step.citations
+        }
 
         if expected_issue and predicted_issue == expected_issue:
             issue_top1 += 1
@@ -217,21 +237,28 @@ def _run_holdout(
         if expected_incident_ids and predicted_incidents.intersection(expected_incident_ids):
             similar_incident_hits += 1
         if expected_citation_doc_ids:
-            correct = predicted_citation_doc_ids.intersection(expected_citation_doc_ids)
-            citation_precision.append(len(correct) / max(len(predicted_citation_doc_ids), 1))
+            correct = predicted_step_citation_doc_ids.intersection(expected_citation_doc_ids)
+            citation_precision.append(len(correct) / max(len(predicted_step_citation_doc_ids), 1))
             citation_recall.append(len(correct) / len(expected_citation_doc_ids))
+        if expected_step_phrases:
+            step_hits = _count_matching_step_phrases(predicted_steps, expected_step_phrases)
+            step_precision.append(step_hits / max(len(predicted_steps), 1))
+            step_recall.append(step_hits / len(expected_step_phrases))
 
         per_case.append(
             {
                 "case_id": row["case_id"],
                 "expected_issue_class": expected_issue,
                 "pred_issue_class": predicted_issue,
+                "request_expected_state_label": request_expected_state_label,
                 "expected_state_label": expected_state_label,
                 "pred_state_label": response.state_assessment.matched_state_label,
                 "expected_matches_expected": expected_match,
                 "pred_matches_expected": response.state_assessment.matches_expected,
                 "expected_escalation": expected_escalation,
                 "pred_escalation": response.escalation_recommendation,
+                "expected_step_phrases": expected_step_phrases,
+                "pred_steps": predicted_steps,
                 "latency_ms": round(latency_ms, 3),
             }
         )
@@ -256,6 +283,8 @@ def _run_holdout(
             "similar_incident_recall_at_3": similar_incident_hits / count,
             "next_step_citation_precision_at_3": _mean(citation_precision),
             "next_step_citation_recall_at_3": _mean(citation_recall),
+            "next_step_precision_at_3": _mean(step_precision),
+            "next_step_recall_at_3": _mean(step_recall),
             "latency_p50_ms": _percentile(latencies_ms, 50),
             "latency_p95_ms": _percentile(latencies_ms, 95),
         },
@@ -281,6 +310,49 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
             if line:
                 rows.append(json.loads(line))
     return rows
+
+
+def _validate_bundle(bundle: Path) -> dict[str, Any]:
+    rows = _load_jsonl(bundle / "holdout_eval.jsonl")
+    unique_issues = {
+        str(row.get("expected_issue_class"))
+        for row in rows
+        if row.get("expected_issue_class") is not None
+    }
+    unique_escalations = {
+        str(row.get("expected_escalation"))
+        for row in rows
+        if row.get("expected_escalation") is not None
+    }
+    media_types = {
+        str(cast(dict[str, Any], row["request"])["observation"]["media_type"]) for row in rows
+    }
+    if len(rows) < 4:
+        raise ValueError("Benchmark bundles must include at least 4 holdout cases")
+    if len(unique_issues) < 3:
+        raise ValueError("Benchmark bundles must cover at least 3 distinct issue classes")
+    if len(unique_escalations) < 2:
+        raise ValueError("Benchmark bundles must cover at least 2 escalation outcomes")
+    return {
+        "holdout_cases": len(rows),
+        "distinct_issue_classes": len(unique_issues),
+        "distinct_escalations": len(unique_escalations),
+        "media_types": sorted(media_types),
+    }
+
+
+def _count_matching_step_phrases(predicted_steps: list[str], expected_phrases: list[str]) -> int:
+    normalized_steps = [_normalize_text(step) for step in predicted_steps]
+    hits = 0
+    for phrase in expected_phrases:
+        normalized_phrase = _normalize_text(phrase)
+        if any(normalized_phrase in step for step in normalized_steps):
+            hits += 1
+    return hits
+
+
+def _normalize_text(text: str) -> str:
+    return " ".join(str(text).lower().split())
 
 
 def _percentile(values: list[float], percentile: int) -> float:

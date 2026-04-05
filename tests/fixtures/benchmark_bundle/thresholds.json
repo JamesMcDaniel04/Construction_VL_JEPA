@@ -1,10 +1,12 @@
 {
-  "escalation_accuracy": 0.0,
-  "escalation_precision": 0.0,
-  "escalation_recall": 0.0,
-  "issue_top1_accuracy": 1.0,
-  "next_step_citation_precision_at_3": 1.0,
-  "next_step_citation_recall_at_3": 1.0,
-  "similar_incident_recall_at_3": 1.0,
+  "escalation_accuracy": 0.75,
+  "escalation_precision": 0.66,
+  "escalation_recall": 0.66,
+  "issue_top1_accuracy": 0.75,
+  "next_step_citation_precision_at_3": 0.75,
+  "next_step_citation_recall_at_3": 0.75,
+  "next_step_precision_at_3": 0.5,
+  "next_step_recall_at_3": 0.75,
+  "similar_incident_recall_at_3": 0.75,
   "state_label_accuracy": 1.0
 }
