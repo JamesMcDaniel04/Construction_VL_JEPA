@@ -21,6 +21,7 @@ dependencies = [
     "torch>=2.3.0",
     "sentence-transformers>=3.0.0",
     "qdrant-client>=1.10.0",
+    "psycopg2-binary>=2.9.9",
     "sqlalchemy>=2.0.0",
     "python-multipart>=0.0.9",
     "Pillow>=10.0.0",
@@ -40,8 +41,10 @@ timm = [
     "torchvision>=0.18.0",
 ]
 video = [
-    "decord>=0.6.0",
     "opencv-python>=4.8.0",
+]
+video-decord = [
+    "decord>=0.6.0",
 ]
 pdf = [
     "PyMuPDF>=1.23.0",
@@ -52,6 +55,7 @@ pdf = [
 mtc-api = "maintenance_triage_copilot.api.main:run"
 mtc-db-upgrade = "maintenance_triage_copilot.storage.migrations:main"
 mtc-train-adapter = "maintenance_triage_copilot.training.train_adapter:main"
+mtc-train-policy = "maintenance_triage_copilot.training.train_policy:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -66,6 +70,9 @@ select = ["E", "F", "I", "UP", "B", "N"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "integration: exercises external systems such as docker-compose stacks",
+]
 
 [tool.mypy]
 python_version = "3.11"
@@ -80,6 +87,7 @@ module = [
     "decord",
     "fitz",
     "pdfplumber",
+    "pytesseract",
     "timm",
     "torchvision.*",
 ]

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, cast
+from uuid import NAMESPACE_URL, uuid5
 
 import numpy as np
 
@@ -42,7 +43,7 @@ class VectorIndex:
             try:
                 from qdrant_client import QdrantClient
 
-                self._qdrant = QdrantClient(url=qdrant_url)
+                self._qdrant = QdrantClient(url=qdrant_url, check_compatibility=False)
                 # Cache existing collection names
                 self._qdrant_collections = {
                     c.name for c in self._qdrant.get_collections().collections
@@ -101,13 +102,15 @@ class VectorIndex:
                 from qdrant_client.models import PointStruct
 
                 self._ensure_collection(namespace, len(normalized))
+                qdrant_payload = dict(payload)
+                qdrant_payload["_item_id"] = item_id
                 self._qdrant.upsert(
                     collection_name=self._collection_name(namespace),
                     points=[
                         PointStruct(
-                            id=item_id,
+                            id=self._qdrant_point_id(namespace, item_id),
                             vector=normalized.tolist(),
-                            payload=payload,
+                            payload=qdrant_payload,
                         )
                     ],
                 )
@@ -165,15 +168,26 @@ class VectorIndex:
             )
 
         qdrant = cast(Any, self._qdrant)
-        results = qdrant.search(
-            collection_name=collection_name,
-            query_vector=query.tolist(),
-            limit=limit,
-            query_filter=query_filter,
-        )
+        if hasattr(qdrant, "query_points"):
+            response = qdrant.query_points(
+                collection_name=collection_name,
+                query=query.tolist(),
+                limit=limit,
+                query_filter=query_filter,
+                with_payload=True,
+                with_vectors=False,
+            )
+            results = response.points
+        else:
+            results = qdrant.search(
+                collection_name=collection_name,
+                query_vector=query.tolist(),
+                limit=limit,
+                query_filter=query_filter,
+            )
         return [
             SearchHit(
-                item_id=str(r.id),
+                item_id=str((r.payload or {}).get("_item_id", r.id)),
                 score=max(0.0, min(1.0, r.score)),
                 payload=r.payload or {},
             )
@@ -221,3 +235,6 @@ class VectorIndex:
         if norm < 1e-8:
             return array
         return array / norm
+
+    def _qdrant_point_id(self, namespace: str, item_id: str) -> str:
+        return str(uuid5(NAMESPACE_URL, f"{self.collection_prefix}:{namespace}:{item_id}"))

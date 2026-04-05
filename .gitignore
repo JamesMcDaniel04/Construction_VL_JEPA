@@ -23,6 +23,7 @@ env/
 
 # Data & models (large files)
 data/
+models/
 checkpoints/
 *.ckpt
 *.pt

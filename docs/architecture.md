@@ -12,7 +12,9 @@ The repo now targets a maintenance triage copilot for electrical panels.
 ## Persistence
 
 - Metadata uses SQLAlchemy against the configured database URL.
-- Vector search uses Qdrant when configured and falls back to in-process vectors only when Qdrant is unavailable.
+- Production mode requires PostgreSQL plus Qdrant and fails fast if either dependency is unavailable.
+- Development mode can still use SQLite metadata and in-process vector fallback.
+- Alembic owns schema creation and upgrades through `mtc-db-upgrade`.
 
 ## Backbones
 
@@ -24,4 +26,15 @@ Only the minimal model slices needed for frozen feature extraction are vendored.
 ## Supported Training
 
 - Supported training entrypoint: `mtc-train-adapter`
+- Supported calibration entrypoint: `mtc-train-policy`
 - Unsupported in this repo: removed third-party JEPA pretraining code and self-supervised JEPA pretraining flows
+
+## Ingestion
+
+- `POST /corpus/upload` supports plain text, Markdown, PDFs, and OCR-backed image documents.
+- PDF ingestion first extracts embedded text and falls back to OCR when the document is sparse or scanned.
+
+## Deployment
+
+- Production containers mount `/models` read-only for the sentence-transformer directory, projector checkpoint, and calibrated triage-policy checkpoint.
+- `tests/integration/test_docker_compose_smoke.py` exercises the compose stack with mounted model assets, Postgres, Qdrant, and the live API.

@@ -9,6 +9,7 @@ from __future__ import annotations
 import io
 import re
 from pathlib import Path
+from typing import cast
 
 from maintenance_triage_copilot.domain.models import CorpusDocument, CorpusSourceType
 
@@ -173,7 +174,7 @@ def _ocr_pil_image(image) -> str:
         text = pytesseract.image_to_string(image)
     except Exception as exc:
         raise RuntimeError("OCR failed; verify that the tesseract binary is installed") from exc
-    return text.strip()
+    return cast(str, text).strip()
 
 
 def _needs_ocr(text: str) -> bool:

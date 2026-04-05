@@ -26,6 +26,7 @@ from maintenance_triage_copilot.domain.models import (
 from maintenance_triage_copilot.encoding.text import MaintenanceTextEncoder
 from maintenance_triage_copilot.models.adapter import VisualTextProjector
 from maintenance_triage_copilot.models.backbones import IJEPAImageAdapter, VJEPAVideoAdapter
+from maintenance_triage_copilot.models.policy import CalibratedTriagePolicy, IssueEvidence
 from maintenance_triage_copilot.retrieval.chunking import chunk_document
 from maintenance_triage_copilot.retrieval.index import SearchHit, VectorIndex
 from maintenance_triage_copilot.storage.protocol import MetadataStore
@@ -38,10 +39,13 @@ class AppState:
     image_backbone: IJEPAImageAdapter
     video_backbone: VJEPAVideoAdapter
     projector: VisualTextProjector
+    triage_policy: CalibratedTriagePolicy
     vector_index: VectorIndex
     metadata_store: MetadataStore
     projector_checkpoint_path: str | None = None
     projector_checkpoint_loaded: bool = False
+    policy_checkpoint_path: str | None = None
+    policy_checkpoint_loaded: bool = False
 
 
 class TriageService:
@@ -98,11 +102,23 @@ class TriageService:
             equipment_family=observation.equipment_family,
         )
 
-        issue_candidates = self._build_issue_candidates(incident_hits, document_hits)
+        issue_evidence = self._build_issue_evidence(
+            request,
+            state_assessment,
+            incident_hits,
+            document_hits,
+        )
+        issue_candidates = self._build_issue_candidates(issue_evidence)
         next_steps = self._build_next_steps(document_hits)
         similar_incidents = self._build_similar_incidents(incident_hits)
         citations = self._collect_citations(document_hits, next_steps)
-        escalation = self._build_escalation(issue_candidates, state_assessment)
+        escalation = self._build_escalation(
+            request,
+            issue_candidates,
+            state_assessment,
+            incident_hits,
+            document_hits,
+        )
 
         response = TriageResponse(
             issue_candidates=issue_candidates,
@@ -121,6 +137,11 @@ class TriageService:
             if self.state.projector_checkpoint_loaded
             else "random_init"
         )
+        policy_status = (
+            "checkpoint_loaded"
+            if self.state.policy_checkpoint_loaded
+            else "bootstrap"
+        )
         return {
             "status": "healthy",
             "components": {
@@ -134,6 +155,11 @@ class TriageService:
                     "status": projector_status,
                     "checkpoint_path": self.state.projector_checkpoint_path,
                     "checkpoint_loaded": self.state.projector_checkpoint_loaded,
+                },
+                "triage_policy": {
+                    "status": policy_status,
+                    "checkpoint_path": self.state.policy_checkpoint_path,
+                    "checkpoint_loaded": self.state.policy_checkpoint_loaded,
                 },
             },
         }
@@ -218,48 +244,81 @@ class TriageService:
         combined = text_embedding + (0.25 * projected.astype(np.float32))
         return self._normalize_embedding(combined)
 
-    def _build_issue_candidates(
+    def _build_issue_evidence(
         self,
+        request: TriageRequest,
+        state_assessment: StateAssessment,
         incident_hits: list[SearchHit],
         document_hits: list[SearchHit],
-    ) -> list[IssueCandidate]:
-        aggregates: dict[str, float] = {}
+    ) -> list[IssueEvidence]:
+        feature_map: dict[str, dict[str, float]] = {}
         rationales: dict[str, str] = {}
+
+        def ensure(issue_class: str) -> dict[str, float]:
+            return feature_map.setdefault(
+                issue_class,
+                {
+                    "incident_sum": 0.0,
+                    "incident_max": 0.0,
+                    "incident_count": 0.0,
+                    "document_sum": 0.0,
+                    "document_max": 0.0,
+                    "document_count": 0.0,
+                    "state_confidence": state_assessment.confidence,
+                    "expected_true": 1.0 if state_assessment.matches_expected is True else 0.0,
+                    "expected_false": 1.0 if state_assessment.matches_expected is False else 0.0,
+                    "question_present": 1.0 if request.question else 0.0,
+                    "operator_context_present": 1.0 if request.operator_context else 0.0,
+                },
+            )
+
         for hit in incident_hits:
             issue_class = str(hit.payload["issue_class"])
-            aggregates[issue_class] = aggregates.get(issue_class, 0.0) + hit.score
+            features = ensure(issue_class)
+            features["incident_sum"] += hit.score
+            features["incident_max"] = max(features["incident_max"], hit.score)
+            features["incident_count"] += 1.0
             rationales.setdefault(
                 issue_class,
                 f"Matched incident '{hit.payload['title']}' with similarity {hit.score:.2f}.",
             )
 
-        if not aggregates:
-            for hit in document_hits:
-                for tag in hit.payload.get("tags", [])[:1]:
-                    aggregates[tag] = aggregates.get(tag, 0.0) + hit.score * 0.5
-                    rationales.setdefault(
-                        tag,
-                        f"Retrieved supporting document chunk '{hit.payload['title']}'.",
-                    )
-
-        if not aggregates:
-            return [
-                IssueCandidate(
-                    issue_class="needs_manual_review",
-                    confidence=0.35,
-                    rationale="No indexed incidents or tagged documents matched strongly enough.",
+        for hit in document_hits:
+            for tag in hit.payload.get("tags", []):
+                issue_class = str(tag)
+                features = ensure(issue_class)
+                features["document_sum"] += hit.score
+                features["document_max"] = max(features["document_max"], hit.score)
+                features["document_count"] += 1.0
+                rationales.setdefault(
+                    issue_class,
+                    f"Retrieved supporting document chunk '{hit.payload['title']}'.",
                 )
-            ]
 
-        total = max(sum(aggregates.values()), 1e-6)
-        ranked = sorted(aggregates.items(), key=lambda item: item[1], reverse=True)
+        return [
+            IssueEvidence(
+                issue_class=issue_class,
+                features=features,
+                rationale=rationales.get(
+                    issue_class,
+                    "Calibrated policy used weak retrieval evidence for this issue class.",
+                ),
+            )
+            for issue_class, features in feature_map.items()
+        ]
+
+    def _build_issue_candidates(self, evidence: list[IssueEvidence]) -> list[IssueCandidate]:
+        ranked = self.state.triage_policy.rank_issues(
+            evidence,
+            top_k=self.state.config.policy.top_k_issues,
+        )
         return [
             IssueCandidate(
                 issue_class=issue_class,
-                confidence=min(1.0, score / total),
-                rationale=rationales[issue_class],
+                confidence=confidence,
+                rationale=rationale,
             )
-            for issue_class, score in ranked[:3]
+            for issue_class, confidence, rationale in ranked
         ]
 
     def _build_next_steps(self, document_hits: list[SearchHit]) -> list[NextStep]:
@@ -329,15 +388,31 @@ class TriageService:
 
     def _build_escalation(
         self,
+        request: TriageRequest,
         issue_candidates: list[IssueCandidate],
         state_assessment: StateAssessment,
+        incident_hits: list[SearchHit],
+        document_hits: list[SearchHit],
     ) -> str:
-        top_confidence = issue_candidates[0].confidence if issue_candidates else 0.0
-        if state_assessment.matches_expected is False:
-            return "escalate_to_senior_technician"
-        if top_confidence < self.state.config.triage.escalation_threshold:
+        action, risk = self.state.triage_policy.choose_escalation(
+            {
+                "top_issue_confidence": issue_candidates[0].confidence if issue_candidates else 0.0,
+                "state_confidence": state_assessment.confidence,
+                "state_mismatch": 1.0 if state_assessment.matches_expected is False else 0.0,
+                "top_incident_score": incident_hits[0].score if incident_hits else 0.0,
+                "top_document_score": document_hits[0].score if document_hits else 0.0,
+                "no_issue_match": 1.0 if not issue_candidates else 0.0,
+                "expected_known": 1.0 if state_assessment.matches_expected is not None else 0.0,
+                "question_present": 1.0 if request.question else 0.0,
+                "operator_context_present": 1.0 if request.operator_context else 0.0,
+            }
+        )
+        if (
+            action == "proceed_with_guided_inspection"
+            and risk < self.state.config.triage.escalation_threshold
+        ):
             return "escalate_for_visual_review"
-        return "proceed_with_guided_inspection"
+        return action
 
     @staticmethod
     def _normalize_embedding(vector: np.ndarray) -> np.ndarray:

@@ -53,7 +53,19 @@ async def upload_document(
         raise HTTPException(status_code=400, detail="Empty file upload")
 
     suffix = Path(filename).suffix.lower()
-    if suffix not in {".pdf", ".txt", ".md", ".rst", ".png", ".jpg", ".jpeg", ".webp", ".tif", ".tiff", ".bmp"}:
+    if suffix not in {
+        ".pdf",
+        ".txt",
+        ".md",
+        ".rst",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
+        ".tif",
+        ".tiff",
+        ".bmp",
+    }:
         raise HTTPException(
             status_code=415,
             detail=f"Unsupported document type: {suffix}. Expected .pdf, .txt, or .md",

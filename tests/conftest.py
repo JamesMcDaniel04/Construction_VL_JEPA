@@ -10,6 +10,7 @@ from maintenance_triage_copilot.config import (
     AppConfig,
     DatabaseConfig,
     ImageBackboneConfig,
+    PolicyConfig,
     RetrievalConfig,
     TextEncoderConfig,
     TriageConfig,
@@ -18,6 +19,7 @@ from maintenance_triage_copilot.config import (
 from maintenance_triage_copilot.encoding.text import MaintenanceTextEncoder
 from maintenance_triage_copilot.models.adapter import VisualTextProjector
 from maintenance_triage_copilot.models.backbones import IJEPAImageAdapter, VJEPAVideoAdapter
+from maintenance_triage_copilot.models.policy import CalibratedTriagePolicy
 from maintenance_triage_copilot.retrieval.index import VectorIndex
 from maintenance_triage_copilot.services.triage import AppState, TriageService
 from maintenance_triage_copilot.storage.sql import SqlAlchemyMetadataStore
@@ -44,6 +46,7 @@ def small_config(tmp_path) -> AppConfig:
             escalation_threshold=0.5,
             video_num_frames=8,
         ),
+        policy=PolicyConfig(top_k_issues=3),
         text_encoder=TextEncoderConfig(backend="mock", embedding_dim=192),
         adapter=AdapterConfig(hidden_dim=192, output_dim=192),
         image_backbone=ImageBackboneConfig(
@@ -81,6 +84,7 @@ def triage_service(small_config: AppConfig) -> TriageService:
         image_backbone=image_backbone,
         video_backbone=video_backbone,
         projector=projector,
+        triage_policy=CalibratedTriagePolicy.bootstrap(),
         vector_index=VectorIndex(),
         metadata_store=SqlAlchemyMetadataStore(small_config.database.postgres_url or ""),
     )

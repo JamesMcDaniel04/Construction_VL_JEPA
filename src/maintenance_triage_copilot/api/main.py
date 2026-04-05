@@ -12,6 +12,7 @@ from maintenance_triage_copilot.config import AppConfig, load_config
 from maintenance_triage_copilot.encoding.text import MaintenanceTextEncoder
 from maintenance_triage_copilot.models.adapter import VisualTextProjector
 from maintenance_triage_copilot.models.backbones import IJEPAImageAdapter, VJEPAVideoAdapter
+from maintenance_triage_copilot.models.policy import CalibratedTriagePolicy
 from maintenance_triage_copilot.retrieval.index import VectorIndex
 from maintenance_triage_copilot.services.triage import AppState, TriageService
 from maintenance_triage_copilot.storage.memory import MemoryMetadataStore
@@ -23,6 +24,13 @@ from maintenance_triage_copilot.utils.logging import setup_logging
 def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
     cfg = config_path if isinstance(config_path, AppConfig) else load_config(config_path)
     is_production = cfg.runtime.is_production()
+    if is_production and (
+        cfg.database.postgres_url is None
+        or not cfg.database.postgres_url.startswith("postgresql")
+    ):
+        raise RuntimeError("Production mode requires a PostgreSQL database URL")
+    if is_production and not cfg.database.qdrant_url:
+        raise RuntimeError("Qdrant is required in production mode")
     app = FastAPI(
         title="Maintenance Triage Copilot",
         description="Vision-language maintenance triage API for industrial electrical panels.",
@@ -67,6 +75,21 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
         projector_checkpoint_loaded = True
     projector.eval()
 
+    policy_checkpoint = cfg.policy.checkpoint_path
+    policy_checkpoint_loaded = False
+    if policy_checkpoint is not None:
+        from pathlib import Path
+
+        policy_path = Path(policy_checkpoint)
+        if not policy_path.exists():
+            raise FileNotFoundError(f"Triage policy checkpoint not found: {policy_path}")
+        triage_policy = CalibratedTriagePolicy.from_file(policy_path)
+        policy_checkpoint_loaded = True
+    elif cfg.policy.require_checkpoint:
+        raise RuntimeError("Production mode requires a calibrated triage policy checkpoint")
+    else:
+        triage_policy = CalibratedTriagePolicy.bootstrap()
+
     metadata_store: MetadataStore
     if cfg.database.postgres_url:
         metadata_store = SqlAlchemyMetadataStore(
@@ -85,6 +108,7 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
         image_backbone=image_backbone,
         video_backbone=video_backbone,
         projector=projector,
+        triage_policy=triage_policy,
         vector_index=VectorIndex(
             qdrant_url=cfg.database.qdrant_url,
             collection_prefix=cfg.database.collection_prefix,
@@ -93,6 +117,8 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
         metadata_store=metadata_store,
         projector_checkpoint_path=projector_checkpoint,
         projector_checkpoint_loaded=projector_checkpoint_loaded,
+        policy_checkpoint_path=policy_checkpoint,
+        policy_checkpoint_loaded=policy_checkpoint_loaded,
     )
     app.state.service = TriageService(state)
 

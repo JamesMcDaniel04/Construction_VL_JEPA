@@ -11,10 +11,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY pyproject.toml README.md ./
+COPY alembic.ini ./
+COPY alembic/ alembic/
 COPY src/ src/
 COPY configs/ configs/
 
-RUN pip install --no-cache-dir -e ".[video,pdf]"
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.11.0 \
+    && pip install --no-cache-dir -e ".[video,pdf]"
 
 VOLUME ["/models"]
 
