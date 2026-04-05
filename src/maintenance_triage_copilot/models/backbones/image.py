@@ -10,7 +10,6 @@ pretrained backbone (for fine-tuned models).
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -20,6 +19,7 @@ import torch.nn.functional as functional
 
 from maintenance_triage_copilot.config import ImageBackboneConfig
 from maintenance_triage_copilot.domain.models import ReferenceState, VisualObservation
+from maintenance_triage_copilot.models.assets import BackboneRuntimeSpec, extract_checkpoint_state_dict
 
 
 class TimmVisionEncoder(nn.Module):
@@ -65,8 +65,9 @@ class TimmVisionEncoder(nn.Module):
 class IJEPAImageAdapter:
     """Image encoder adapter that wraps either timm or vendored ViT."""
 
-    def __init__(self, cfg: ImageBackboneConfig):
+    def __init__(self, cfg: ImageBackboneConfig, runtime_spec: BackboneRuntimeSpec | None = None):
         self.cfg = cfg
+        self.runtime_spec = runtime_spec
         self._use_timm = getattr(cfg, "use_timm", False)
         self.model: Any
         self._embed_dim: int
@@ -84,23 +85,37 @@ class IJEPAImageAdapter:
         else:
             from maintenance_triage_copilot.vendor.meta_ijepa import VisionTransformer
 
+            input_size = runtime_spec.input_size if runtime_spec is not None else cfg.input_size
+            patch_size = runtime_spec.patch_size if runtime_spec is not None else cfg.patch_size
+            embed_dim = runtime_spec.embedding_dim if runtime_spec is not None else cfg.embed_dim
+            depth = runtime_spec.depth if runtime_spec is not None else cfg.depth
+            num_heads = runtime_spec.num_heads if runtime_spec is not None else cfg.num_heads
             self.model = VisionTransformer(
-                img_size=cfg.input_size,
-                patch_size=cfg.patch_size,
-                embed_dim=cfg.embed_dim,
-                depth=cfg.depth,
-                num_heads=cfg.num_heads,
+                img_size=input_size,
+                patch_size=patch_size,
+                embed_dim=embed_dim,
+                depth=depth,
+                num_heads=num_heads,
             )
-            self._embed_dim = cfg.embed_dim
-            self._input_size = cfg.input_size
+            self._embed_dim = embed_dim
+            self._input_size = input_size
 
         # Load checkpoint if provided
-        checkpoint_path = getattr(cfg, "checkpoint_path", None)
-        if checkpoint_path and Path(checkpoint_path).exists():
-            state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-            if "model_state_dict" in state_dict:
-                state_dict = state_dict["model_state_dict"]
-            self.model.load_state_dict(state_dict, strict=False)
+        checkpoint_path = (
+            runtime_spec.checkpoint_path
+            if runtime_spec is not None and runtime_spec.checkpoint_path is not None
+            else getattr(cfg, "checkpoint_path", None)
+        )
+        if checkpoint_path:
+            checkpoint_keys = (
+                runtime_spec.checkpoint_keys if runtime_spec is not None else ["target_encoder", "encoder"]
+            )
+            state_dict = extract_checkpoint_state_dict(checkpoint_path, checkpoint_keys)
+            msg = self.model.load_state_dict(state_dict, strict=True)
+            if msg.missing_keys or msg.unexpected_keys:
+                raise RuntimeError(f"Unexpected checkpoint load result for {checkpoint_path}: {msg}")
+        elif cfg.require_checkpoint:
+            raise RuntimeError("Image backbone checkpoint is required but was not configured")
 
         self.model.eval()
 

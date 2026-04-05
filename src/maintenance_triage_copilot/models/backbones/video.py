@@ -9,7 +9,6 @@ Supports two modes:
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, cast
 
 import numpy as np
@@ -18,14 +17,16 @@ import torch.nn.functional as functional
 
 from maintenance_triage_copilot.config import VideoBackboneConfig
 from maintenance_triage_copilot.domain.models import ReferenceState, VisualObservation
+from maintenance_triage_copilot.models.assets import BackboneRuntimeSpec, extract_checkpoint_state_dict
 from maintenance_triage_copilot.models.backbones.image import TimmVisionEncoder
 
 
 class VJEPAVideoAdapter:
     """Video encoder adapter that wraps either timm (per-frame) or vendored 3D ViT."""
 
-    def __init__(self, cfg: VideoBackboneConfig):
+    def __init__(self, cfg: VideoBackboneConfig, runtime_spec: BackboneRuntimeSpec | None = None):
         self.cfg = cfg
+        self.runtime_spec = runtime_spec
         self._use_timm = getattr(cfg, "use_timm", False)
         self._frame_encoder: TimmVisionEncoder | None
         self.model: Any
@@ -43,26 +44,44 @@ class VJEPAVideoAdapter:
         else:
             from maintenance_triage_copilot.vendor.meta_vjepa import VideoVisionTransformer
 
+            input_size = runtime_spec.input_size if runtime_spec is not None else cfg.input_size
+            patch_size = runtime_spec.patch_size if runtime_spec is not None else cfg.patch_size
+            num_frames = runtime_spec.num_frames if runtime_spec is not None else cfg.num_frames
+            tubelet_size = (
+                runtime_spec.tubelet_size if runtime_spec is not None else cfg.tubelet_size
+            )
+            embed_dim = runtime_spec.embedding_dim if runtime_spec is not None else cfg.embed_dim
+            depth = runtime_spec.depth if runtime_spec is not None else cfg.depth
+            num_heads = runtime_spec.num_heads if runtime_spec is not None else cfg.num_heads
             self.model = VideoVisionTransformer(
-                img_size=cfg.input_size,
-                patch_size=cfg.patch_size,
-                num_frames=cfg.num_frames,
-                tubelet_size=cfg.tubelet_size,
-                embed_dim=cfg.embed_dim,
-                depth=cfg.depth,
-                num_heads=cfg.num_heads,
+                img_size=input_size,
+                patch_size=patch_size,
+                num_frames=num_frames,
+                tubelet_size=tubelet_size,
+                embed_dim=embed_dim,
+                depth=depth,
+                num_heads=num_heads,
             )
             self._frame_encoder = None
-            self._embed_dim = cfg.embed_dim
-            self._input_size = cfg.input_size
+            self._embed_dim = embed_dim
+            self._input_size = input_size
 
         # Load checkpoint if provided
-        checkpoint_path = getattr(cfg, "checkpoint_path", None)
-        if checkpoint_path and Path(checkpoint_path).exists():
-            state_dict = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
-            if "model_state_dict" in state_dict:
-                state_dict = state_dict["model_state_dict"]
-            self.model.load_state_dict(state_dict, strict=False)
+        checkpoint_path = (
+            runtime_spec.checkpoint_path
+            if runtime_spec is not None and runtime_spec.checkpoint_path is not None
+            else getattr(cfg, "checkpoint_path", None)
+        )
+        if checkpoint_path:
+            checkpoint_keys = (
+                runtime_spec.checkpoint_keys if runtime_spec is not None else ["target_encoder", "encoder"]
+            )
+            state_dict = extract_checkpoint_state_dict(checkpoint_path, checkpoint_keys)
+            msg = self.model.load_state_dict(state_dict, strict=True)
+            if msg.missing_keys or msg.unexpected_keys:
+                raise RuntimeError(f"Unexpected checkpoint load result for {checkpoint_path}: {msg}")
+        elif cfg.require_checkpoint:
+            raise RuntimeError("Video backbone checkpoint is required but was not configured")
 
         self.model.eval()
 
@@ -75,9 +94,13 @@ class VJEPAVideoAdapter:
         if tensor.ndim != 4:
             raise ValueError("Expected video tensor with shape [C, T, H, W]")
         _, frames, _, _ = tensor.shape
-        if frames == self.cfg.num_frames:
+        target_frames = (
+            self.runtime_spec.num_frames if self.runtime_spec is not None else self.cfg.num_frames
+        )
+        assert target_frames is not None
+        if frames == target_frames:
             return tensor
-        indices = torch.linspace(0, max(frames - 1, 0), self.cfg.num_frames).long()
+        indices = torch.linspace(0, max(frames - 1, 0), target_frames).long()
         return tensor[:, indices]
 
     def encode_observation(self, observation: VisualObservation | ReferenceState) -> np.ndarray:
@@ -137,7 +160,11 @@ class VJEPAVideoAdapter:
 
     def encode_raw_video(self, video_bytes: bytes) -> np.ndarray:
         """Encode raw video bytes (MP4/AVI/etc.) by extracting frames."""
-        tensor = _decode_video_bytes(video_bytes, self.cfg.num_frames)
+        num_frames = (
+            self.runtime_spec.num_frames if self.runtime_spec is not None else self.cfg.num_frames
+        )
+        assert num_frames is not None
+        tensor = _decode_video_bytes(video_bytes, num_frames)
         if self._frame_encoder is not None:
             return self._encode_per_frame(tensor)
         return self._encode_3d(tensor)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -19,6 +20,11 @@ class ApiConfig:
 @dataclass
 class RuntimeConfig:
     mode: str = "development"
+    model_dir: str = "/models"
+    allow_smoke_assets: bool = False
+    max_image_upload_bytes: int = 5 * 1024 * 1024
+    max_video_upload_bytes: int = 50 * 1024 * 1024
+    max_document_upload_bytes: int = 20 * 1024 * 1024
 
     def is_production(self) -> bool:
         return self.mode.lower() == "production"
@@ -73,7 +79,34 @@ class AdapterConfig:
 
 
 @dataclass
+class SecurityConfig:
+    service_tokens: dict[str, str] = field(default_factory=dict)
+    require_auth_in_production: bool = True
+
+
+@dataclass
+class TelemetryConfig:
+    prometheus_enabled: bool = True
+    otlp_endpoint: str | None = None
+    service_name: str = "maintenance-triage-copilot"
+
+
+@dataclass
+class ObjectStoreConfig:
+    endpoint_url: str | None = None
+    bucket: str | None = None
+    region: str | None = None
+    access_key: str | None = None
+    secret_key: str | None = None
+    force_path_style: bool = True
+    required_in_production: bool = True
+    create_bucket_if_missing: bool = True
+
+
+@dataclass
 class ImageBackboneConfig:
+    preset: str | None = None
+    require_checkpoint: bool = False
     use_timm: bool = False
     timm_model_name: str = "vit_tiny_patch16_224"
     timm_pretrained: bool = True
@@ -87,6 +120,8 @@ class ImageBackboneConfig:
 
 @dataclass
 class VideoBackboneConfig:
+    preset: str | None = None
+    require_checkpoint: bool = False
     use_timm: bool = False
     timm_model_name: str = "vit_tiny_patch16_224"
     timm_pretrained: bool = True
@@ -108,6 +143,9 @@ class AppConfig:
     retrieval: RetrievalConfig = field(default_factory=RetrievalConfig)
     triage: TriageConfig = field(default_factory=TriageConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
+    security: SecurityConfig = field(default_factory=SecurityConfig)
+    telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
+    object_store: ObjectStoreConfig = field(default_factory=ObjectStoreConfig)
     text_encoder: TextEncoderConfig = field(default_factory=TextEncoderConfig)
     adapter: AdapterConfig = field(default_factory=AdapterConfig)
     image_backbone: ImageBackboneConfig = field(default_factory=ImageBackboneConfig)
@@ -136,4 +174,31 @@ def load_config(path: str | Path | None = None) -> AppConfig:
         with config_path.open() as handle:
             raw = yaml.safe_load(handle) or {}
         _apply_dict(cfg, raw)
+    _apply_env_overrides(cfg)
     return cfg
+
+
+def _apply_env_overrides(cfg: AppConfig) -> None:
+    tokens_json = os.getenv("MTC_SERVICE_TOKENS_JSON")
+    if tokens_json:
+        cfg.security.service_tokens = {
+            str(key): str(value) for key, value in json.loads(tokens_json).items()
+        }
+
+    access_key = os.getenv("MTC_OBJECT_STORE_ACCESS_KEY")
+    if access_key:
+        cfg.object_store.access_key = access_key
+    secret_key = os.getenv("MTC_OBJECT_STORE_SECRET_KEY")
+    if secret_key:
+        cfg.object_store.secret_key = secret_key
+    endpoint_url = os.getenv("MTC_OBJECT_STORE_ENDPOINT_URL")
+    if endpoint_url:
+        cfg.object_store.endpoint_url = endpoint_url
+    bucket = os.getenv("MTC_OBJECT_STORE_BUCKET")
+    if bucket:
+        cfg.object_store.bucket = bucket
+    otlp_endpoint = os.getenv("MTC_OTLP_ENDPOINT")
+    if otlp_endpoint:
+        cfg.telemetry.otlp_endpoint = otlp_endpoint
+    if os.getenv("MTC_ALLOW_SMOKE_ASSETS") == "1":
+        cfg.runtime.allow_smoke_assets = True

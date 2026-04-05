@@ -8,6 +8,7 @@ from typing import Annotated, cast
 from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 
 from maintenance_triage_copilot.domain.models import (
+    AssetType,
     CorpusDocument,
     CorpusSourceType,
     IncidentRecord,
@@ -51,6 +52,14 @@ async def upload_document(
 
     if not data:
         raise HTTPException(status_code=400, detail="Empty file upload")
+    if len(data) > request.app.state.service.state.config.runtime.max_document_upload_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "Upload exceeds maximum size of "
+                f"{request.app.state.service.state.config.runtime.max_document_upload_bytes} bytes"
+            ),
+        )
 
     suffix = Path(filename).suffix.lower()
     if suffix not in {
@@ -71,6 +80,18 @@ async def upload_document(
             detail=f"Unsupported document type: {suffix}. Expected .pdf, .txt, or .md",
         )
 
+    asset = request.app.state.service.persist_uploaded_asset(
+        asset_type=AssetType.corpus_upload,
+        filename=filename,
+        content_type=file.content_type or "application/octet-stream",
+        data=data,
+        metadata={
+            "document_id": document_id,
+            "source_type": source_type.value,
+            "equipment_family": equipment_family,
+        },
+    )
+
     # Parse from bytes in memory to avoid sync tempfile in async context
     document = _parse_bytes(
         data,
@@ -83,6 +104,7 @@ async def upload_document(
     )
 
     result = request.app.state.service.add_document(document)
+    result["asset_id"] = asset.asset_id
     return cast(dict[str, object], result)
 
 

@@ -10,7 +10,9 @@ from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 from maintenance_triage_copilot.domain.models import (
     CorpusDocument,
     IncidentRecord,
+    MediaAssetRecord,
     ReferenceState,
+    TriageAuditRecord,
     TriageResponse,
 )
 from maintenance_triage_copilot.storage.migrations import run_migrations
@@ -47,6 +49,25 @@ class TriageHistoryRecord(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     request_id = Column(String, nullable=False, index=True)
     response = Column(JSON, nullable=False)
+
+
+class MediaAssetRecordORM(Base):
+    __tablename__ = "media_assets"
+
+    asset_id = Column(String, primary_key=True)
+    asset_type = Column(String, nullable=False, index=True)
+    created_at = Column(String, nullable=False, index=True)
+    payload = Column(JSON, nullable=False)
+
+
+class TriageAuditRecordORM(Base):
+    __tablename__ = "triage_audits"
+
+    audit_id = Column(String, primary_key=True)
+    request_id = Column(String, nullable=False, index=True)
+    principal = Column(String, nullable=False, index=True)
+    created_at = Column(String, nullable=False, index=True)
+    payload = Column(JSON, nullable=False)
 
 
 class SqlAlchemyMetadataStore:
@@ -103,16 +124,71 @@ class SqlAlchemyMetadataStore:
                 )
             )
 
+    def add_media_asset(self, asset: MediaAssetRecord) -> None:
+        payload = asset.model_dump(mode="json")
+        with self.session_factory.begin() as session:
+            session.merge(
+                MediaAssetRecordORM(
+                    asset_id=asset.asset_id,
+                    asset_type=asset.asset_type.value,
+                    created_at=asset.created_at.isoformat(),
+                    payload=payload,
+                )
+            )
+
+    def get_media_asset(self, asset_id: str) -> MediaAssetRecord | None:
+        with self.session_factory() as session:
+            record = session.get(MediaAssetRecordORM, asset_id)
+            if record is None:
+                return None
+            payload = self._payload(record.payload)
+        return MediaAssetRecord.model_validate(payload)
+
+    def record_triage_audit(self, audit: TriageAuditRecord) -> None:
+        payload = audit.model_dump(mode="json")
+        with self.session_factory.begin() as session:
+            session.merge(
+                TriageAuditRecordORM(
+                    audit_id=audit.audit_id,
+                    request_id=audit.request_id,
+                    principal=audit.principal,
+                    created_at=audit.created_at.isoformat(),
+                    payload=payload,
+                )
+            )
+
+    def get_triage_audit(self, audit_id: str) -> TriageAuditRecord | None:
+        with self.session_factory() as session:
+            record = session.get(TriageAuditRecordORM, audit_id)
+            if record is None:
+                return None
+            payload = self._payload(record.payload)
+        return TriageAuditRecord.model_validate(payload)
+
+    def list_triage_audits(self, limit: int, offset: int) -> list[TriageAuditRecord]:
+        with self.session_factory() as session:
+            rows = session.scalars(
+                select(TriageAuditRecordORM)
+                .order_by(TriageAuditRecordORM.created_at.desc())
+                .offset(offset)
+                .limit(limit)
+            ).all()
+        return [TriageAuditRecord.model_validate(self._payload(row.payload)) for row in rows]
+
     def status(self) -> dict[str, str]:
         with self.session_factory() as session:
             document_count = self._count(session, DocumentRecord)
             incident_count = self._count(session, IncidentRecordORM)
             reference_state_count = self._count(session, ReferenceStateRecord)
+            media_asset_count = self._count(session, MediaAssetRecordORM)
+            audit_count = self._count(session, TriageAuditRecordORM)
         return {
             "metadata_store": "sqlalchemy",
             "documents": str(document_count),
             "incidents": str(incident_count),
             "reference_states": str(reference_state_count),
+            "media_assets": str(media_asset_count),
+            "triage_audits": str(audit_count),
         }
 
     @staticmethod

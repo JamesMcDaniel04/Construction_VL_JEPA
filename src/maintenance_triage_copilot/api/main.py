@@ -6,24 +6,28 @@ import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from maintenance_triage_copilot.api.middleware import ApiKeyMiddleware, RequestMetricsMiddleware
-from maintenance_triage_copilot.api.routes import corpus, media, reference_states, system, triage
+from maintenance_triage_copilot.api.middleware import BearerAuthMiddleware, RequestContextMiddleware
+from maintenance_triage_copilot.api.routes import audit, corpus, media, metrics, reference_states, system, triage
 from maintenance_triage_copilot.config import AppConfig, load_config
 from maintenance_triage_copilot.encoding.text import MaintenanceTextEncoder
 from maintenance_triage_copilot.models.adapter import VisualTextProjector
+from maintenance_triage_copilot.models.assets import validate_model_assets
 from maintenance_triage_copilot.models.backbones import IJEPAImageAdapter, VJEPAVideoAdapter
 from maintenance_triage_copilot.models.policy import CalibratedTriagePolicy
 from maintenance_triage_copilot.retrieval.index import VectorIndex
 from maintenance_triage_copilot.services.triage import AppState, TriageService
 from maintenance_triage_copilot.storage.memory import MemoryMetadataStore
+from maintenance_triage_copilot.storage.object_store import MemoryObjectStore, S3ObjectStore
 from maintenance_triage_copilot.storage.protocol import MetadataStore
 from maintenance_triage_copilot.storage.sql import SqlAlchemyMetadataStore
+from maintenance_triage_copilot.telemetry import configure_telemetry
 from maintenance_triage_copilot.utils.logging import setup_logging
 
 
 def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
     cfg = config_path if isinstance(config_path, AppConfig) else load_config(config_path)
     is_production = cfg.runtime.is_production()
+    assets = validate_model_assets(cfg)
     if is_production and (
         cfg.database.postgres_url is None
         or not cfg.database.postgres_url.startswith("postgresql")
@@ -31,6 +35,8 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
         raise RuntimeError("Production mode requires a PostgreSQL database URL")
     if is_production and not cfg.database.qdrant_url:
         raise RuntimeError("Qdrant is required in production mode")
+    if is_production and cfg.security.require_auth_in_production and not cfg.security.service_tokens:
+        raise RuntimeError("Production mode requires bearer service tokens")
     app = FastAPI(
         title="Maintenance Triage Copilot",
         description="Vision-language maintenance triage API for industrial electrical panels.",
@@ -38,8 +44,8 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
     )
 
     # Middleware stack (order matters — outermost first)
-    app.add_middleware(RequestMetricsMiddleware)
-    app.add_middleware(ApiKeyMiddleware)
+    app.add_middleware(RequestContextMiddleware)
+    app.add_middleware(BearerAuthMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cfg.api.cors_origins,
@@ -49,15 +55,15 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
     )
 
     text_encoder = MaintenanceTextEncoder(cfg.text_encoder)
-    image_backbone = IJEPAImageAdapter(cfg.image_backbone)
-    video_backbone = VJEPAVideoAdapter(cfg.video_backbone)
+    image_backbone = IJEPAImageAdapter(cfg.image_backbone, runtime_spec=assets.image_backbone)
+    video_backbone = VJEPAVideoAdapter(cfg.video_backbone, runtime_spec=assets.video_backbone)
     projector = VisualTextProjector(
         input_dim=image_backbone.embedding_dim,
         hidden_dim=cfg.adapter.hidden_dim,
         output_dim=cfg.adapter.output_dim,
     )
 
-    projector_checkpoint = cfg.adapter.checkpoint_path
+    projector_checkpoint = assets.projector_checkpoint_path or cfg.adapter.checkpoint_path
     projector_checkpoint_loaded = False
     if projector_checkpoint is not None:
         from pathlib import Path
@@ -75,7 +81,7 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
         projector_checkpoint_loaded = True
     projector.eval()
 
-    policy_checkpoint = cfg.policy.checkpoint_path
+    policy_checkpoint = assets.policy_checkpoint_path or cfg.policy.checkpoint_path
     policy_checkpoint_loaded = False
     if policy_checkpoint is not None:
         from pathlib import Path
@@ -102,6 +108,21 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
             raise RuntimeError("Postgres is required in production mode")
         metadata_store = MemoryMetadataStore()
 
+    if cfg.object_store.endpoint_url and cfg.object_store.bucket:
+        object_store = S3ObjectStore(cfg.object_store, required=is_production)
+    else:
+        if is_production and cfg.object_store.required_in_production:
+            raise RuntimeError("Production mode requires S3-compatible object storage")
+        object_store = MemoryObjectStore()
+
+    auth_required = bool(cfg.security.service_tokens) or (
+        is_production and cfg.security.require_auth_in_production
+    )
+    app.state.service_token_lookup = {
+        token: principal for principal, token in cfg.security.service_tokens.items()
+    }
+    app.state.auth_required = auth_required
+
     state = AppState(
         config=cfg,
         text_encoder=text_encoder,
@@ -115,15 +136,32 @@ def create_app(config_path: str | AppConfig | None = None) -> FastAPI:
             required=is_production,
         ),
         metadata_store=metadata_store,
+        object_store=object_store,
+        asset_status=assets.status,
+        auth_mode="bearer" if auth_required else "disabled",
+        telemetry_mode=(
+            "prometheus+otlp"
+            if cfg.telemetry.prometheus_enabled and cfg.telemetry.otlp_endpoint
+            else "prometheus"
+            if cfg.telemetry.prometheus_enabled
+            else "disabled"
+        ),
         projector_checkpoint_path=projector_checkpoint,
         projector_checkpoint_loaded=projector_checkpoint_loaded,
         policy_checkpoint_path=policy_checkpoint,
         policy_checkpoint_loaded=policy_checkpoint_loaded,
     )
     app.state.service = TriageService(state)
+    configure_telemetry(
+        cfg=cfg.telemetry,
+        app=app,
+        engine=getattr(metadata_store, "engine", None),
+    )
 
+    app.include_router(audit.router)
     app.include_router(corpus.router)
     app.include_router(media.router)
+    app.include_router(metrics.router)
     app.include_router(reference_states.router)
     app.include_router(system.router)
     app.include_router(triage.router)

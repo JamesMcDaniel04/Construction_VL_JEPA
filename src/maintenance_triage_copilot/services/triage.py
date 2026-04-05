@@ -3,22 +3,29 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any, cast
+from uuid import uuid4
 
 import numpy as np
 import torch
 
 from maintenance_triage_copilot.config import AppConfig
 from maintenance_triage_copilot.domain.models import (
+    AssetType,
     Citation,
     CorpusDocument,
     IncidentRecord,
     IssueCandidate,
+    MediaAssetRecord,
+    MediaAssetView,
     MediaType,
     NextStep,
     ReferenceState,
     SimilarIncident,
     StateAssessment,
+    TriageAuditDetail,
+    TriageAuditRecord,
     TriageRequest,
     TriageResponse,
     VisualObservation,
@@ -29,7 +36,9 @@ from maintenance_triage_copilot.models.backbones import IJEPAImageAdapter, VJEPA
 from maintenance_triage_copilot.models.policy import CalibratedTriagePolicy, IssueEvidence
 from maintenance_triage_copilot.retrieval.chunking import chunk_document
 from maintenance_triage_copilot.retrieval.index import SearchHit, VectorIndex
+from maintenance_triage_copilot.storage.object_store import ObjectStore
 from maintenance_triage_copilot.storage.protocol import MetadataStore
+from maintenance_triage_copilot.telemetry import trace_operation
 
 
 @dataclass
@@ -42,6 +51,10 @@ class AppState:
     triage_policy: CalibratedTriagePolicy
     vector_index: VectorIndex
     metadata_store: MetadataStore
+    object_store: ObjectStore
+    asset_status: dict[str, dict[str, str | bool]]
+    auth_mode: str = "none"
+    telemetry_mode: str = "disabled"
     projector_checkpoint_path: str | None = None
     projector_checkpoint_loaded: bool = False
     policy_checkpoint_path: str | None = None
@@ -131,6 +144,83 @@ class TriageService:
         self.state.metadata_store.record_triage(observation.observation_id, response)
         return response
 
+    def persist_uploaded_asset(
+        self,
+        *,
+        asset_type: AssetType,
+        filename: str,
+        content_type: str,
+        data: bytes,
+        metadata: dict[str, str | int | float | bool] | None = None,
+    ) -> MediaAssetRecord:
+        with trace_operation("object_store.put_bytes"):
+            stored = self.state.object_store.put_bytes(
+                asset_type=asset_type.value,
+                filename=filename,
+                data=data,
+                content_type=content_type,
+            )
+        asset = MediaAssetRecord(
+            asset_id=f"{asset_type.value}-{stored.sha256[:24]}",
+            asset_type=asset_type,
+            filename=filename,
+            content_type=content_type,
+            byte_size=stored.byte_size,
+            sha256=stored.sha256,
+            object_uri=stored.object_uri,
+            created_at=stored.created_at,
+            metadata=metadata or {},
+        )
+        self.state.metadata_store.add_media_asset(asset)
+        return asset
+
+    def record_triage_audit(
+        self,
+        *,
+        request_id: str,
+        principal: str,
+        trace_id: str | None,
+        request_payload: TriageRequest,
+        response_payload: TriageResponse,
+        linked_asset_ids: list[str],
+        metadata: dict[str, str | int | float | bool] | None = None,
+    ) -> TriageAuditRecord:
+        audit = TriageAuditRecord(
+            audit_id=f"audit-{uuid4().hex}",
+            request_id=request_id,
+            observation_id=request_payload.observation.observation_id,
+            principal=principal,
+            trace_id=trace_id,
+            request_payload=request_payload.model_dump(mode="json"),
+            response_payload=response_payload.model_dump(mode="json"),
+            linked_asset_ids=linked_asset_ids,
+            outcome_status="completed",
+            created_at=datetime.now(tz=timezone.utc),
+            metadata=metadata or {},
+        )
+        self.state.metadata_store.record_triage_audit(audit)
+        return audit
+
+    def list_triage_audits(self, *, limit: int, offset: int) -> list[TriageAuditRecord]:
+        return self.state.metadata_store.list_triage_audits(limit, offset)
+
+    def get_triage_audit_detail(self, audit_id: str) -> TriageAuditDetail | None:
+        audit = self.state.metadata_store.get_triage_audit(audit_id)
+        if audit is None:
+            return None
+        assets: list[MediaAssetView] = []
+        for asset_id in audit.linked_asset_ids:
+            asset = self.state.metadata_store.get_media_asset(asset_id)
+            if asset is None:
+                continue
+            assets.append(
+                MediaAssetView(
+                    **asset.model_dump(),
+                    presigned_url=self.state.object_store.presigned_url(asset.object_uri),
+                )
+            )
+        return TriageAuditDetail(audit=audit, linked_assets=assets)
+
     def health(self) -> dict[str, Any]:
         projector_status = (
             "checkpoint_loaded"
@@ -148,9 +238,17 @@ class TriageService:
                 "api": "healthy",
                 "metadata_store": self.state.metadata_store.status(),
                 "vector_index": self.state.vector_index.status(),
-                "image_backbone": "ready",
-                "video_backbone": "ready",
+                "object_store": self.state.object_store.status(),
+                "image_backbone": self.state.asset_status.get(
+                    "image_backbone", {"status": "ready"}
+                ),
+                "video_backbone": self.state.asset_status.get(
+                    "video_backbone", {"status": "ready"}
+                ),
                 "text_encoder": "ready",
+                "manifest": self.state.asset_status.get("manifest", {"status": "missing"}),
+                "auth": {"mode": self.state.auth_mode},
+                "telemetry": {"mode": self.state.telemetry_mode},
                 "projector": {
                     "status": projector_status,
                     "checkpoint_path": self.state.projector_checkpoint_path,
@@ -165,11 +263,12 @@ class TriageService:
         }
 
     def _encode_visual(self, media: ReferenceState | VisualObservation) -> np.ndarray:
-        if isinstance(media, VisualObservation) and media.has_precomputed_embedding():
-            return self._normalize_embedding(media.load_embedding())
-        if media.media_type == MediaType.image:
-            return self._normalize_embedding(self.state.image_backbone.encode_observation(media))
-        return self._normalize_embedding(self.state.video_backbone.encode_observation(media))
+        with trace_operation("visual.encode"):
+            if isinstance(media, VisualObservation) and media.has_precomputed_embedding():
+                return self._normalize_embedding(media.load_embedding())
+            if media.media_type == MediaType.image:
+                return self._normalize_embedding(self.state.image_backbone.encode_observation(media))
+            return self._normalize_embedding(self.state.video_backbone.encode_observation(media))
 
     def _search_states(self, observation: VisualObservation) -> list[SearchHit]:
         embedding = self._encode_visual(observation)
@@ -239,8 +338,9 @@ class TriageService:
 
         visual_embedding = self._encode_visual(request.observation)
         projector_input = torch.from_numpy(visual_embedding).unsqueeze(0)
-        with torch.no_grad():
-            projected = self.state.projector(projector_input).squeeze(0).cpu().numpy()
+        with trace_operation("projector.inference"):
+            with torch.no_grad():
+                projected = self.state.projector(projector_input).squeeze(0).cpu().numpy()
         combined = text_embedding + (0.25 * projected.astype(np.float32))
         return self._normalize_embedding(combined)
 
@@ -394,19 +494,20 @@ class TriageService:
         incident_hits: list[SearchHit],
         document_hits: list[SearchHit],
     ) -> str:
-        action, risk = self.state.triage_policy.choose_escalation(
-            {
-                "top_issue_confidence": issue_candidates[0].confidence if issue_candidates else 0.0,
-                "state_confidence": state_assessment.confidence,
-                "state_mismatch": 1.0 if state_assessment.matches_expected is False else 0.0,
-                "top_incident_score": incident_hits[0].score if incident_hits else 0.0,
-                "top_document_score": document_hits[0].score if document_hits else 0.0,
-                "no_issue_match": 1.0 if not issue_candidates else 0.0,
-                "expected_known": 1.0 if state_assessment.matches_expected is not None else 0.0,
-                "question_present": 1.0 if request.question else 0.0,
-                "operator_context_present": 1.0 if request.operator_context else 0.0,
-            }
-        )
+        with trace_operation("policy.escalation"):
+            action, risk = self.state.triage_policy.choose_escalation(
+                {
+                    "top_issue_confidence": issue_candidates[0].confidence if issue_candidates else 0.0,
+                    "state_confidence": state_assessment.confidence,
+                    "state_mismatch": 1.0 if state_assessment.matches_expected is False else 0.0,
+                    "top_incident_score": incident_hits[0].score if incident_hits else 0.0,
+                    "top_document_score": document_hits[0].score if document_hits else 0.0,
+                    "no_issue_match": 1.0 if not issue_candidates else 0.0,
+                    "expected_known": 1.0 if state_assessment.matches_expected is not None else 0.0,
+                    "question_present": 1.0 if request.question else 0.0,
+                    "operator_context_present": 1.0 if request.operator_context else 0.0,
+                }
+            )
         if (
             action == "proceed_with_guided_inspection"
             and risk < self.state.config.triage.escalation_threshold

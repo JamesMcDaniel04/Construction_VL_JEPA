@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import torch
@@ -20,6 +22,11 @@ class CorpusSourceType(StrEnum):
 class MediaType(StrEnum):
     image = "image"
     video = "video"
+
+
+class AssetType(StrEnum):
+    triage_upload = "triage_upload"
+    corpus_upload = "corpus_upload"
 
 
 class Citation(BaseModel):
@@ -212,3 +219,44 @@ class TriageResponse(BaseModel):
     similar_incidents: list[SimilarIncident]
     escalation_recommendation: str
     evidence_citations: list[Citation]
+
+
+class MediaAssetRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str
+    asset_type: AssetType
+    filename: str
+    content_type: str
+    byte_size: int
+    sha256: str
+    object_uri: str
+    created_at: datetime
+    metadata: dict[str, str | int | float | bool] = Field(default_factory=dict)
+
+
+class TriageAuditRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    audit_id: str
+    request_id: str
+    observation_id: str
+    principal: str
+    trace_id: str | None = None
+    request_payload: dict[str, Any]
+    response_payload: dict[str, Any]
+    linked_asset_ids: list[str] = Field(default_factory=list)
+    outcome_status: str
+    created_at: datetime
+    metadata: dict[str, str | int | float | bool] = Field(default_factory=dict)
+
+
+class MediaAssetView(MediaAssetRecord):
+    presigned_url: str | None = None
+
+
+class TriageAuditDetail(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    audit: TriageAuditRecord
+    linked_assets: list[MediaAssetView] = Field(default_factory=list)
