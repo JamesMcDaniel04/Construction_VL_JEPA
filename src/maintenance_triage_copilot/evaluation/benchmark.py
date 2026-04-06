@@ -314,6 +314,7 @@ def _load_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def _validate_bundle(bundle: Path) -> dict[str, Any]:
     rows = _load_jsonl(bundle / "holdout_eval.jsonl")
+    documents = _load_jsonl(bundle / "documents.jsonl")
     unique_issues = {
         str(row.get("expected_issue_class"))
         for row in rows
@@ -327,17 +328,39 @@ def _validate_bundle(bundle: Path) -> dict[str, Any]:
     media_types = {
         str(cast(dict[str, Any], row["request"])["observation"]["media_type"]) for row in rows
     }
-    if len(rows) < 4:
-        raise ValueError("Benchmark bundles must include at least 4 holdout cases")
-    if len(unique_issues) < 3:
-        raise ValueError("Benchmark bundles must cover at least 3 distinct issue classes")
+    equipment_families = {
+        str(cast(dict[str, Any], row["request"])["observation"]["equipment_family"])
+        for row in rows
+    }
+    expected_citation_doc_ids = {
+        str(document_id)
+        for row in rows
+        for document_id in row.get("expected_citation_document_ids", [])
+    }
+    distractor_document_ids = {
+        str(row.get("document_id"))
+        for row in documents
+        if str(row.get("document_id")) not in expected_citation_doc_ids
+    }
+    if len(rows) < 6:
+        raise ValueError("Benchmark bundles must include at least 6 holdout cases")
+    if len(unique_issues) < 5:
+        raise ValueError("Benchmark bundles must cover at least 5 distinct issue classes")
     if len(unique_escalations) < 2:
         raise ValueError("Benchmark bundles must cover at least 2 escalation outcomes")
+    if len(equipment_families) < 2:
+        raise ValueError("Benchmark bundles must cover at least 2 equipment families")
+    if len(distractor_document_ids) < 2:
+        raise ValueError("Benchmark bundles must include at least 2 distractor documents")
     return {
         "holdout_cases": len(rows),
         "distinct_issue_classes": len(unique_issues),
         "distinct_escalations": len(unique_escalations),
+        "distinct_equipment_families": len(equipment_families),
+        "equipment_families": sorted(equipment_families),
         "media_types": sorted(media_types),
+        "distractor_documents": sorted(distractor_document_ids),
+        "total_documents": len(documents),
     }
 
 

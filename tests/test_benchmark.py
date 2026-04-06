@@ -89,9 +89,11 @@ def test_eval_triage_writes_reports_and_metrics(small_config, tmp_path, monkeypa
 
     summary = json.loads((output_dir / "summary.json").read_text())
     per_case = (output_dir / "per_case.jsonl").read_text().strip().splitlines()
-    assert summary["cases"] == 4
-    assert summary["bundle_profile"]["holdout_cases"] == 4
-    assert summary["bundle_profile"]["distinct_issue_classes"] >= 4
+    assert summary["cases"] == 6
+    assert summary["bundle_profile"]["holdout_cases"] == 6
+    assert summary["bundle_profile"]["distinct_issue_classes"] >= 6
+    assert summary["bundle_profile"]["distinct_equipment_families"] == 2
+    assert len(summary["bundle_profile"]["distractor_documents"]) >= 2
     assert "video" in summary["bundle_profile"]["media_types"]
     assert summary["metrics"]["issue_top1_accuracy"] >= 0.75
     assert summary["metrics"]["state_label_accuracy"] >= 1.0
@@ -99,8 +101,8 @@ def test_eval_triage_writes_reports_and_metrics(small_config, tmp_path, monkeypa
     assert "escalation_recall" in summary["metrics"]
     assert "next_step_precision_at_3" in summary["metrics"]
     assert "next_step_recall_at_3" in summary["metrics"]
-    assert summary["policy"]["metadata"]["trained_examples"] == "4"
+    assert summary["policy"]["metadata"]["trained_examples"] == "6"
     assert all(summary["thresholds_met"].values())
-    assert len(per_case) == 4
+    assert len(per_case) == 6
     assert (output_dir / "issue_confusion.csv").exists()
     assert (output_dir / "escalation_confusion.csv").exists()
