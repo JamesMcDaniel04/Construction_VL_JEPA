@@ -5,6 +5,10 @@ export function helpfulRateLabel(rate: number | null | undefined): string {
   return `${Math.round(rate * 100)}%`;
 }
 
-export function inviteIssuedMessage(displayName: string, token: string): string {
-  return `Invite created for ${displayName}. Token: ${token}`;
+export function inviteIssuedMessage(
+  displayName: string,
+  email: string,
+  status: string,
+): string {
+  return `Invite ${status} for ${displayName} at ${email}.`;
 }

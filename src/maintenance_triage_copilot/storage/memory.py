@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from maintenance_triage_copilot.domain.models import (
+    AssetRecord,
     CorpusDocument,
     IncidentRecord,
     MediaAssetRecord,
     PilotUser,
     ReferenceState,
+    SiteRecord,
     TriageAuditRecord,
     TriageCase,
     TriageResponse,
@@ -21,6 +23,8 @@ class MemoryMetadataStore:
         self.reference_states: dict[str, ReferenceState] = {}
         self.triage_cases: dict[str, TriageCase] = {}
         self.pilot_users: dict[str, PilotUser] = {}
+        self.sites: dict[str, SiteRecord] = {}
+        self.assets: dict[str, AssetRecord] = {}
         self.media_assets: dict[str, MediaAssetRecord] = {}
         self.triage_audits: dict[str, TriageAuditRecord] = {}
         self.triage_history: list[dict[str, object]] = []
@@ -72,12 +76,88 @@ class MemoryMetadataStore:
     def get_pilot_user(self, user_id: str) -> PilotUser | None:
         return self.pilot_users.get(user_id)
 
+    def get_pilot_user_by_email(self, email: str) -> PilotUser | None:
+        lowered = email.strip().lower()
+        for user in self.pilot_users.values():
+            if user.email.lower() == lowered:
+                return user
+        return None
+
     def list_pilot_users(self, limit: int, offset: int) -> list[PilotUser]:
         items = sorted(
             self.pilot_users.values(),
             key=lambda item: item.created_at,
             reverse=True,
         )
+        return items[offset : offset + limit]
+
+    def add_site(self, site: SiteRecord) -> None:
+        self.sites[site.site_id] = site
+
+    def get_site(self, site_id: str) -> SiteRecord | None:
+        return self.sites.get(site_id)
+
+    def list_sites(
+        self,
+        limit: int,
+        offset: int,
+        *,
+        organization_id: str | None = None,
+        query: str | None = None,
+        active_only: bool = False,
+    ) -> list[SiteRecord]:
+        items = sorted(self.sites.values(), key=lambda item: (item.name.lower(), item.site_id))
+        if organization_id is not None:
+            items = [item for item in items if item.organization_id == organization_id]
+        if active_only:
+            items = [item for item in items if item.active]
+        if query:
+            lowered = query.strip().lower()
+            items = [
+                item
+                for item in items
+                if lowered in item.name.lower()
+                or lowered in (item.code or "").lower()
+                or lowered in item.site_id.lower()
+            ]
+        return items[offset : offset + limit]
+
+    def add_asset_catalog_record(self, asset: AssetRecord) -> None:
+        self.assets[asset.asset_id] = asset
+
+    def get_asset_catalog_record(self, asset_id: str) -> AssetRecord | None:
+        return self.assets.get(asset_id)
+
+    def list_asset_catalog_records(
+        self,
+        limit: int,
+        offset: int,
+        *,
+        organization_id: str | None = None,
+        site_id: str | None = None,
+        query: str | None = None,
+        active_only: bool = False,
+    ) -> list[AssetRecord]:
+        items = sorted(
+            self.assets.values(),
+            key=lambda item: (item.display_name.lower(), item.asset_id),
+        )
+        if organization_id is not None:
+            items = [item for item in items if item.organization_id == organization_id]
+        if site_id is not None:
+            items = [item for item in items if item.site_id == site_id]
+        if active_only:
+            items = [item for item in items if item.active]
+        if query:
+            lowered = query.strip().lower()
+            items = [
+                item
+                for item in items
+                if lowered in item.display_name.lower()
+                or lowered in item.asset_id.lower()
+                or lowered in (item.panel_id or "").lower()
+                or lowered in item.panel_family.lower()
+            ]
         return items[offset : offset + limit]
 
     def add_media_asset(self, asset: MediaAssetRecord) -> None:
@@ -108,6 +188,8 @@ class MemoryMetadataStore:
             "reference_states": str(len(self.reference_states)),
             "triage_cases": str(len(self.triage_cases)),
             "pilot_users": str(len(self.pilot_users)),
+            "sites": str(len(self.sites)),
+            "assets": str(len(self.assets)),
             "media_assets": str(len(self.media_assets)),
             "triage_audits": str(len(self.triage_audits)),
         }

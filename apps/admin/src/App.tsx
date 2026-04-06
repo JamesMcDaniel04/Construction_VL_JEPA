@@ -1,5 +1,6 @@
 import type { FormEvent } from "react";
-import { startTransition, useEffect, useState } from "react";
+import { createClient, type Session } from "@supabase/supabase-js";
+import { startTransition, useEffect, useMemo, useState } from "react";
 import { helpfulRateLabel, inviteIssuedMessage } from "./lib/pilotAdmin";
 
 type DashboardMetrics = {
@@ -58,6 +59,7 @@ type Identity = {
   display_name: string;
   role: string;
   organization_id?: string | null;
+  email?: string | null;
 };
 
 type PilotUserView = {
@@ -70,28 +72,67 @@ type PilotUserView = {
   active: boolean;
 };
 
-type Session = {
-  apiBaseUrl: string;
-  token: string;
+type SiteRecord = {
+  site_id: string;
+  organization_id: string;
+  name: string;
+  code?: string | null;
+  active: boolean;
 };
 
-const SESSION_KEY = "mtc.admin.session";
+type AssetRecord = {
+  asset_id: string;
+  organization_id: string;
+  site_id: string;
+  display_name: string;
+  panel_family: string;
+  equipment_family: string;
+  panel_id?: string | null;
+  active: boolean;
+};
+
+const DEV_API_BASE_KEY = "mtc.admin.dev-api-base";
 const DEFAULT_API_BASE_URL =
   import.meta.env.VITE_MTC_API_BASE_URL ?? "http://localhost:8000";
+const SUPABASE_URL = import.meta.env.VITE_SUPABASE_URL ?? "";
+const SUPABASE_ANON_KEY = import.meta.env.VITE_SUPABASE_ANON_KEY ?? "";
+const SUPABASE_REDIRECT_URL =
+  import.meta.env.VITE_SUPABASE_WEB_REDIRECT_URL ??
+  `${window.location.origin}/auth/callback`;
+const DEBUG_OVERRIDE_ENABLED =
+  import.meta.env.DEV || import.meta.env.VITE_MTC_ENABLE_DEBUG_OVERRIDE === "1";
+
+const supabase =
+  SUPABASE_URL && SUPABASE_ANON_KEY
+    ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: {
+          persistSession: true,
+          autoRefreshToken: true,
+        },
+      })
+    : null;
 
 export default function App() {
   const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_API_BASE_URL);
-  const [token, setToken] = useState("");
+  const [debugApiBaseUrl, setDebugApiBaseUrl] = useState(DEFAULT_API_BASE_URL);
   const [identity, setIdentity] = useState<Identity | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [dashboard, setDashboard] = useState<DashboardMetrics | null>(null);
   const [cases, setCases] = useState<CaseSummary[]>([]);
   const [selectedCase, setSelectedCase] = useState<CaseDetail | null>(null);
   const [selectedAudit, setSelectedAudit] = useState<AuditDetail | null>(null);
   const [documents, setDocuments] = useState<Array<{ document_id: string; title: string }>>([]);
-  const [referenceStates, setReferenceStates] = useState<Array<{ state_id: string; state_label: string }>>([]);
+  const [referenceStates, setReferenceStates] = useState<
+    Array<{ state_id: string; state_label: string }>
+  >([]);
   const [pilotUsers, setPilotUsers] = useState<PilotUserView[]>([]);
+  const [sites, setSites] = useState<SiteRecord[]>([]);
+  const [assets, setAssets] = useState<AssetRecord[]>([]);
   const [connecting, setConnecting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [loginEmail, setLoginEmail] = useState("");
+  const [developerTapCount, setDeveloperTapCount] = useState(0);
+  const [debugVisible, setDebugVisible] = useState(false);
 
   const [documentForm, setDocumentForm] = useState({
     documentId: "",
@@ -120,32 +161,91 @@ export default function App() {
     email: "",
     role: "technician",
   });
+  const [siteForm, setSiteForm] = useState({
+    siteId: "",
+    name: "",
+    code: "",
+  });
+  const [assetForm, setAssetForm] = useState({
+    assetId: "",
+    siteId: "",
+    displayName: "",
+    panelFamily: "",
+    equipmentFamily: "electrical_panel_family_a",
+    panelId: "",
+  });
+
+  const sitesById = useMemo(() => new Map(sites.map((site) => [site.site_id, site])), [sites]);
 
   useEffect(() => {
-    const raw = window.localStorage.getItem(SESSION_KEY);
-    if (!raw) {
-      return;
-    }
-    const session = JSON.parse(raw) as Session;
-    setApiBaseUrl(session.apiBaseUrl);
-    setToken(session.token);
-    void connectWithCredentials(session.apiBaseUrl, session.token, true).catch((error) => {
-      window.localStorage.removeItem(SESSION_KEY);
-      setMessage(errorMessage(error));
-    });
+    void loadBootstrapState();
   }, []);
 
   useEffect(() => {
-    if (identity) {
-      window.localStorage.setItem(SESSION_KEY, JSON.stringify({ apiBaseUrl, token }));
+    if (!supabase) {
+      return undefined;
     }
-  }, [apiBaseUrl, identity, token]);
+    const subscription = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      if (nextSession) {
+        void connectWithSession(nextSession, true);
+      } else {
+        setIdentity(null);
+        setDashboard(null);
+        setCases([]);
+        setSelectedCase(null);
+        setSelectedAudit(null);
+      }
+    });
+    return () => {
+      subscription.data.subscription.unsubscribe();
+    };
+  }, [apiBaseUrl]);
 
-  async function connect() {
+  async function loadBootstrapState() {
+    try {
+      const [debugBaseUrl, sessionResponse] = await Promise.all([
+        DEBUG_OVERRIDE_ENABLED
+          ? Promise.resolve(window.localStorage.getItem(DEV_API_BASE_KEY))
+          : Promise.resolve(null),
+        supabase?.auth.getSession() ?? Promise.resolve({ data: { session: null } }),
+      ]);
+      const resolvedBaseUrl = debugBaseUrl?.trim() ? debugBaseUrl.trim() : DEFAULT_API_BASE_URL;
+      setApiBaseUrl(resolvedBaseUrl);
+      setDebugApiBaseUrl(resolvedBaseUrl);
+
+      const restoredSession = sessionResponse.data.session;
+      setSession(restoredSession);
+      if (restoredSession) {
+        await connectWithSession(restoredSession, true);
+      }
+    } catch (error) {
+      setMessage(errorMessage(error));
+    }
+  }
+
+  async function sendMagicLink() {
+    if (!supabase) {
+      setMessage(
+        "Supabase is not configured. Set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY for the admin build.",
+      );
+      return;
+    }
+    if (!loginEmail.trim()) {
+      setMessage("Enter the invited admin email for this organization.");
+      return;
+    }
     setConnecting(true);
     setMessage(null);
     try {
-      await connectWithCredentials(apiBaseUrl, token, false);
+      const { error } = await supabase.auth.signInWithOtp({
+        email: loginEmail.trim().toLowerCase(),
+        options: { emailRedirectTo: SUPABASE_REDIRECT_URL },
+      });
+      if (error) {
+        throw error;
+      }
+      setMessage("Magic link sent. Open it in this browser to continue.");
     } catch (error) {
       setMessage(errorMessage(error));
     } finally {
@@ -153,74 +253,104 @@ export default function App() {
     }
   }
 
-  async function connectWithCredentials(baseUrl: string, bearer: string, silent: boolean) {
-    const me = await fetchJson<Identity>(`${baseUrl}/auth/me`, {
-      headers: authHeaders(bearer),
+  async function connectWithSession(nextSession: Session, silent: boolean) {
+    const accessToken = nextSession.access_token;
+    const me = await fetchJson<Identity>(`${apiBaseUrl}/auth/me`, {
+      headers: authHeaders(accessToken),
     });
     setIdentity(me);
     await Promise.all([
-      loadDashboard(baseUrl, bearer),
-      loadCases(baseUrl, bearer),
-      loadCorpus(baseUrl, bearer),
-      loadPilotUsers(baseUrl, bearer),
+      loadDashboard(accessToken),
+      loadCases(accessToken),
+      loadCorpus(accessToken),
+      loadPilotUsers(accessToken),
+      loadCatalog(accessToken),
     ]);
     if (!silent) {
       setMessage("Admin session connected.");
     }
   }
 
-  async function loadDashboard(baseUrl = apiBaseUrl, bearer = token) {
-    const payload = await fetchJson<DashboardMetrics>(`${baseUrl}/admin/dashboard`, {
-      headers: authHeaders(bearer),
+  async function loadDashboard(accessToken = session?.access_token) {
+    if (!accessToken) {
+      return;
+    }
+    const payload = await fetchJson<DashboardMetrics>(`${apiBaseUrl}/admin/dashboard`, {
+      headers: authHeaders(accessToken),
     });
     setDashboard(payload);
   }
 
-  async function loadCases(baseUrl = apiBaseUrl, bearer = token) {
-    const payload = await fetchJson<{ items: CaseSummary[] }>(`${baseUrl}/cases`, {
-      headers: authHeaders(bearer),
+  async function loadCases(accessToken = session?.access_token) {
+    if (!accessToken) {
+      return;
+    }
+    const payload = await fetchJson<{ items: CaseSummary[] }>(`${apiBaseUrl}/cases`, {
+      headers: authHeaders(accessToken),
     });
     startTransition(() => {
       setCases(payload.items);
     });
   }
 
-  async function loadCorpus(baseUrl = apiBaseUrl, bearer = token) {
+  async function loadCorpus(accessToken = session?.access_token) {
+    if (!accessToken) {
+      return;
+    }
     const [docs, states] = await Promise.all([
       fetchJson<{ items: Array<{ document_id: string; title: string }> }>(
-        `${baseUrl}/corpus/documents`,
-        { headers: authHeaders(bearer) },
+        `${apiBaseUrl}/corpus/documents`,
+        { headers: authHeaders(accessToken) },
       ),
       fetchJson<{ items: Array<{ state_id: string; state_label: string }> }>(
-        `${baseUrl}/reference-states`,
-        { headers: authHeaders(bearer) },
+        `${apiBaseUrl}/reference-states`,
+        { headers: authHeaders(accessToken) },
       ),
     ]);
     setDocuments(docs.items);
     setReferenceStates(states.items);
   }
 
-  async function loadPilotUsers(baseUrl = apiBaseUrl, bearer = token) {
-    const payload = await fetchJson<{ items: PilotUserView[] }>(
-      `${baseUrl}/admin/pilot-users`,
-      {
-        headers: authHeaders(bearer),
-      },
-    );
+  async function loadPilotUsers(accessToken = session?.access_token) {
+    if (!accessToken) {
+      return;
+    }
+    const payload = await fetchJson<{ items: PilotUserView[] }>(`${apiBaseUrl}/admin/pilot-users`, {
+      headers: authHeaders(accessToken),
+    });
     setPilotUsers(payload.items);
   }
 
+  async function loadCatalog(accessToken = session?.access_token) {
+    if (!accessToken) {
+      return;
+    }
+    const [sitePayload, assetPayload] = await Promise.all([
+      fetchJson<{ items: SiteRecord[] }>(`${apiBaseUrl}/catalog/sites`, {
+        headers: authHeaders(accessToken),
+      }),
+      fetchJson<{ items: AssetRecord[] }>(`${apiBaseUrl}/catalog/assets`, {
+        headers: authHeaders(accessToken),
+      }),
+    ]);
+    setSites(sitePayload.items);
+    setAssets(assetPayload.items);
+  }
+
   async function openCase(caseId: string) {
+    if (!session) {
+      return;
+    }
     try {
       const detail = await fetchJson<CaseDetail>(`${apiBaseUrl}/cases/${caseId}`, {
-        headers: authHeaders(token),
+        headers: authHeaders(session.access_token),
       });
       setSelectedCase(detail);
       if (detail.latest_audit_id) {
         const audit = await fetchJson<AuditDetail>(
           `${apiBaseUrl}/audit/triage/${detail.latest_audit_id}`,
           {
-            headers: authHeaders(token),
+            headers: authHeaders(session.access_token),
           },
         );
         setSelectedAudit(audit);
@@ -234,6 +364,9 @@ export default function App() {
 
   async function submitDocument(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!session) {
+      return;
+    }
     if (!documentForm.file) {
       setMessage("Select a manual, SOP, or OCR-compatible file first.");
       return;
@@ -248,10 +381,16 @@ export default function App() {
     try {
       await fetchJson(`${apiBaseUrl}/corpus/upload`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${session.access_token}` },
         body: form,
       });
-      setDocumentForm((current) => ({ ...current, documentId: "", title: "", tags: "", file: null }));
+      setDocumentForm((current) => ({
+        ...current,
+        documentId: "",
+        title: "",
+        tags: "",
+        file: null,
+      }));
       await loadCorpus();
       setMessage("Corpus document indexed.");
     } catch (error) {
@@ -261,10 +400,13 @@ export default function App() {
 
   async function submitIncident(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!session) {
+      return;
+    }
     try {
       await fetchJson(`${apiBaseUrl}/corpus/incidents`, {
         method: "POST",
-        headers: authHeaders(token),
+        headers: authHeaders(session.access_token),
         body: JSON.stringify({
           incident_id: incidentForm.incidentId,
           title: incidentForm.title,
@@ -289,6 +431,9 @@ export default function App() {
 
   async function submitReferenceState(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!session) {
+      return;
+    }
     if (!referenceForm.file) {
       setMessage("Attach a reference-state image or short clip.");
       return;
@@ -302,7 +447,7 @@ export default function App() {
     try {
       await fetchJson(`${apiBaseUrl}/reference-states/upload`, {
         method: "POST",
-        headers: { Authorization: `Bearer ${token}` },
+        headers: { Authorization: `Bearer ${session.access_token}` },
         body: form,
       });
       setReferenceForm((current) => ({
@@ -321,26 +466,137 @@ export default function App() {
 
   async function invitePilotUser(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!session || !identity) {
+      return;
+    }
     try {
       const payload = await fetchJson<{
         user: PilotUserView;
-        bearer_token: string;
+        invite_status: string;
       }>(`${apiBaseUrl}/admin/pilot-users/invite`, {
         method: "POST",
-        headers: authHeaders(token),
+        headers: authHeaders(session.access_token),
         body: JSON.stringify({
-          organization_id: identity?.organization_id ?? "org-1",
+          organization_id: identity.organization_id ?? "org-1",
           role: inviteForm.role,
           display_name: inviteForm.displayName,
-          email: inviteForm.email || null,
+          email: inviteForm.email,
         }),
       });
       setInviteForm({ displayName: "", email: "", role: "technician" });
       await loadPilotUsers();
-      setMessage(inviteIssuedMessage(payload.user.display_name, payload.bearer_token));
+      setMessage(
+        inviteIssuedMessage(payload.user.display_name, payload.user.email ?? "", payload.invite_status),
+      );
     } catch (error) {
       setMessage(errorMessage(error));
     }
+  }
+
+  async function submitSite(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session) {
+      return;
+    }
+    try {
+      await fetchJson(`${apiBaseUrl}/catalog/sites`, {
+        method: "POST",
+        headers: authHeaders(session.access_token),
+        body: JSON.stringify({
+          site_id: siteForm.siteId,
+          name: siteForm.name,
+          code: emptyToUndefined(siteForm.code),
+        }),
+      });
+      setSiteForm({ siteId: "", name: "", code: "" });
+      await loadCatalog();
+      setMessage("Site saved.");
+    } catch (error) {
+      setMessage(errorMessage(error));
+    }
+  }
+
+  async function submitAsset(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!session) {
+      return;
+    }
+    try {
+      await fetchJson(`${apiBaseUrl}/catalog/assets`, {
+        method: "POST",
+        headers: authHeaders(session.access_token),
+        body: JSON.stringify({
+          asset_id: assetForm.assetId,
+          site_id: assetForm.siteId,
+          display_name: assetForm.displayName,
+          panel_family: assetForm.panelFamily,
+          equipment_family: assetForm.equipmentFamily,
+          panel_id: emptyToUndefined(assetForm.panelId),
+        }),
+      });
+      setAssetForm({
+        assetId: "",
+        siteId: "",
+        displayName: "",
+        panelFamily: "",
+        equipmentFamily: "electrical_panel_family_a",
+        panelId: "",
+      });
+      await loadCatalog();
+      setMessage("Asset saved.");
+    } catch (error) {
+      setMessage(errorMessage(error));
+    }
+  }
+
+  async function saveDebugBaseUrl() {
+    const next = debugApiBaseUrl.trim() || DEFAULT_API_BASE_URL;
+    setApiBaseUrl(next);
+    if (DEBUG_OVERRIDE_ENABLED) {
+      window.localStorage.setItem(DEV_API_BASE_KEY, next);
+    }
+    setMessage(`Developer API override set to ${next}.`);
+    setDebugVisible(false);
+    if (session) {
+      await connectWithSession(session, true);
+    }
+  }
+
+  function resetDebugBaseUrl() {
+    setApiBaseUrl(DEFAULT_API_BASE_URL);
+    setDebugApiBaseUrl(DEFAULT_API_BASE_URL);
+    window.localStorage.removeItem(DEV_API_BASE_KEY);
+    setMessage("Developer API override cleared.");
+    setDebugVisible(false);
+  }
+
+  function onBuildLabelClick() {
+    if (!DEBUG_OVERRIDE_ENABLED) {
+      return;
+    }
+    setDeveloperTapCount((current) => {
+      const next = current + 1;
+      if (next >= 5) {
+        setDebugVisible(true);
+        return 0;
+      }
+      return next;
+    });
+  }
+
+  async function signOut() {
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
+    setIdentity(null);
+    setSession(null);
+    setDashboard(null);
+    setCases([]);
+    setSelectedAudit(null);
+    setSelectedCase(null);
+    setSites([]);
+    setAssets([]);
+    setMessage("Signed out.");
   }
 
   if (!identity) {
@@ -350,29 +606,49 @@ export default function App() {
           <p className="eyebrow">Pilot Admin</p>
           <h1>Electrical-panel field triage operations</h1>
           <p>
-            Upload manuals, incidents, and reference states. Review technician cases, feedback,
-            escalation rate, and unresolved work without touching raw API payloads.
+            Sign in with your invited email, then manage corpus uploads, reference states,
+            pilot users, sites, assets, and technician case review without touching raw tokens.
           </p>
         </section>
         <section className="panel">
-          <h2>Connect</h2>
+          <h2>Sign in with magic link</h2>
           <label>
-            API base URL
-            <input value={apiBaseUrl} onChange={(event) => setApiBaseUrl(event.target.value)} />
-          </label>
-          <label>
-            Admin bearer token
+            Invited email
             <input
-              value={token}
-              onChange={(event) => setToken(event.target.value)}
-              type="password"
+              value={loginEmail}
+              onChange={(event) => setLoginEmail(event.target.value)}
+              type="email"
+              placeholder="admin@example.com"
             />
           </label>
-          <button className="primary-button" onClick={() => void connect()} disabled={connecting}>
-            {connecting ? "Connecting…" : "Connect to admin console"}
+          <button className="primary-button" onClick={() => void sendMagicLink()} disabled={connecting}>
+            {connecting ? "Sending…" : "Send magic link"}
           </button>
           {message ? <p className="inline-message">{message}</p> : null}
         </section>
+        <button className="debug-trigger" onClick={onBuildLabelClick}>
+          pilot build · click 5x for developer override
+        </button>
+        {debugVisible ? (
+          <section className="panel">
+            <h2>Developer override</h2>
+            <label>
+              API base URL
+              <input
+                value={debugApiBaseUrl}
+                onChange={(event) => setDebugApiBaseUrl(event.target.value)}
+              />
+            </label>
+            <div className="topbar-actions">
+              <button className="primary-button" onClick={() => void saveDebugBaseUrl()}>
+                Save override
+              </button>
+              <button className="ghost-button" onClick={resetDebugBaseUrl}>
+                Reset
+              </button>
+            </div>
+          </section>
+        ) : null}
       </main>
     );
   }
@@ -390,20 +666,13 @@ export default function App() {
         <div className="topbar-actions">
           <button
             className="ghost-button"
-            onClick={() => void Promise.all([loadDashboard(), loadCases(), loadCorpus(), loadPilotUsers()])}
+            onClick={() =>
+              void Promise.all([loadDashboard(), loadCases(), loadCorpus(), loadPilotUsers(), loadCatalog()])
+            }
           >
             Refresh
           </button>
-          <button
-            className="ghost-button"
-            onClick={() => {
-              window.localStorage.removeItem(SESSION_KEY);
-              setIdentity(null);
-              setToken("");
-              setSelectedAudit(null);
-              setSelectedCase(null);
-            }}
-          >
+          <button className="ghost-button" onClick={() => void signOut()}>
             Sign out
           </button>
         </div>
@@ -442,22 +711,22 @@ export default function App() {
         </section>
       ) : null}
 
-      <section className="two-column">
+      <section className="three-column">
         <div className="panel">
           <h2>Pilot user invites</h2>
           <form className="stack" onSubmit={invitePilotUser}>
             <input
               placeholder="display name"
               value={inviteForm.displayName}
-              onChange={(event) =>
-                setInviteForm({ ...inviteForm, displayName: event.target.value })
-              }
+              onChange={(event) => setInviteForm({ ...inviteForm, displayName: event.target.value })}
               required
             />
             <input
               placeholder="email"
               value={inviteForm.email}
               onChange={(event) => setInviteForm({ ...inviteForm, email: event.target.value })}
+              type="email"
+              required
             />
             <select
               value={inviteForm.role}
@@ -467,7 +736,7 @@ export default function App() {
               <option value="admin">admin</option>
             </select>
             <button className="primary-button" type="submit">
-              Issue invite token
+              Send invite
             </button>
           </form>
           <div className="compact-list">
@@ -486,12 +755,122 @@ export default function App() {
         </div>
 
         <div className="panel">
+          <h2>Sites</h2>
+          <form className="stack" onSubmit={submitSite}>
+            <input
+              placeholder="site_id"
+              value={siteForm.siteId}
+              onChange={(event) => setSiteForm({ ...siteForm, siteId: event.target.value })}
+              required
+            />
+            <input
+              placeholder="name"
+              value={siteForm.name}
+              onChange={(event) => setSiteForm({ ...siteForm, name: event.target.value })}
+              required
+            />
+            <input
+              placeholder="code"
+              value={siteForm.code}
+              onChange={(event) => setSiteForm({ ...siteForm, code: event.target.value })}
+            />
+            <button className="primary-button" type="submit">
+              Save site
+            </button>
+          </form>
+          <div className="compact-list">
+            {sites.slice(0, 8).map((site) => (
+              <div key={site.site_id} className="list-row">
+                <div>
+                  <strong>{site.name}</strong>
+                  <p className="subtle">{site.code ?? "no code"}</p>
+                </div>
+                <span>{site.site_id}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="panel">
+          <h2>Assets</h2>
+          <form className="stack" onSubmit={submitAsset}>
+            <input
+              placeholder="asset_id"
+              value={assetForm.assetId}
+              onChange={(event) => setAssetForm({ ...assetForm, assetId: event.target.value })}
+              required
+            />
+            <select
+              value={assetForm.siteId}
+              onChange={(event) => setAssetForm({ ...assetForm, siteId: event.target.value })}
+              required
+            >
+              <option value="">select site</option>
+              {sites.map((site) => (
+                <option key={site.site_id} value={site.site_id}>
+                  {site.name} · {site.site_id}
+                </option>
+              ))}
+            </select>
+            <input
+              placeholder="display name"
+              value={assetForm.displayName}
+              onChange={(event) =>
+                setAssetForm({ ...assetForm, displayName: event.target.value })
+              }
+              required
+            />
+            <input
+              placeholder="panel family"
+              value={assetForm.panelFamily}
+              onChange={(event) =>
+                setAssetForm({ ...assetForm, panelFamily: event.target.value })
+              }
+              required
+            />
+            <input
+              placeholder="equipment family"
+              value={assetForm.equipmentFamily}
+              onChange={(event) =>
+                setAssetForm({ ...assetForm, equipmentFamily: event.target.value })
+              }
+              required
+            />
+            <input
+              placeholder="panel id"
+              value={assetForm.panelId}
+              onChange={(event) => setAssetForm({ ...assetForm, panelId: event.target.value })}
+            />
+            <button className="primary-button" type="submit">
+              Save asset
+            </button>
+          </form>
+          <div className="compact-list">
+            {assets.slice(0, 8).map((asset) => (
+              <div key={asset.asset_id} className="list-row">
+                <div>
+                  <strong>{asset.display_name}</strong>
+                  <p className="subtle">
+                    {sitesById.get(asset.site_id)?.name ?? asset.site_id} · {asset.panel_family}
+                  </p>
+                </div>
+                <span>{asset.asset_id}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="two-column">
+        <div className="panel">
           <h2>Upload manual / SOP</h2>
           <form className="stack" onSubmit={submitDocument}>
             <input
               placeholder="document_id"
               value={documentForm.documentId}
-              onChange={(event) => setDocumentForm({ ...documentForm, documentId: event.target.value })}
+              onChange={(event) =>
+                setDocumentForm({ ...documentForm, documentId: event.target.value })
+              }
               required
             />
             <input
@@ -506,7 +885,9 @@ export default function App() {
             />
             <select
               value={documentForm.sourceType}
-              onChange={(event) => setDocumentForm({ ...documentForm, sourceType: event.target.value })}
+              onChange={(event) =>
+                setDocumentForm({ ...documentForm, sourceType: event.target.value })
+              }
             >
               <option value="manual">manual</option>
               <option value="sop">sop</option>
@@ -565,13 +946,17 @@ export default function App() {
             <input
               placeholder="issue class"
               value={incidentForm.issueClass}
-              onChange={(event) => setIncidentForm({ ...incidentForm, issueClass: event.target.value })}
+              onChange={(event) =>
+                setIncidentForm({ ...incidentForm, issueClass: event.target.value })
+              }
               required
             />
             <textarea
               placeholder="fix summary"
               value={incidentForm.fixSummary}
-              onChange={(event) => setIncidentForm({ ...incidentForm, fixSummary: event.target.value })}
+              onChange={(event) =>
+                setIncidentForm({ ...incidentForm, fixSummary: event.target.value })
+              }
               required
             />
             <button className="primary-button" type="submit">
@@ -588,7 +973,9 @@ export default function App() {
             <input
               placeholder="state label"
               value={referenceForm.stateLabel}
-              onChange={(event) => setReferenceForm({ ...referenceForm, stateLabel: event.target.value })}
+              onChange={(event) =>
+                setReferenceForm({ ...referenceForm, stateLabel: event.target.value })
+              }
               required
             />
             <textarea
@@ -604,6 +991,13 @@ export default function App() {
               value={referenceForm.caption}
               onChange={(event) => setReferenceForm({ ...referenceForm, caption: event.target.value })}
               required
+            />
+            <input
+              placeholder="equipment family"
+              value={referenceForm.equipmentFamily}
+              onChange={(event) =>
+                setReferenceForm({ ...referenceForm, equipmentFamily: event.target.value })
+              }
             />
             <input
               type="file"
@@ -712,6 +1106,30 @@ export default function App() {
           ) : null}
         </div>
       </section>
+
+      <button className="debug-trigger" onClick={onBuildLabelClick}>
+        pilot build · click 5x for developer override
+      </button>
+      {debugVisible ? (
+        <section className="panel">
+          <h2>Developer override</h2>
+          <label>
+            API base URL
+            <input
+              value={debugApiBaseUrl}
+              onChange={(event) => setDebugApiBaseUrl(event.target.value)}
+            />
+          </label>
+          <div className="topbar-actions">
+            <button className="primary-button" onClick={() => void saveDebugBaseUrl()}>
+              Save override
+            </button>
+            <button className="ghost-button" onClick={resetDebugBaseUrl}>
+              Reset
+            </button>
+          </div>
+        </section>
+      ) : null}
     </main>
   );
 }
@@ -725,9 +1143,9 @@ function MetricCard(props: { label: string; value: string }) {
   );
 }
 
-function authHeaders(token: string) {
+function authHeaders(accessToken: string) {
   return {
-    Authorization: `Bearer ${token}`,
+    Authorization: `Bearer ${accessToken}`,
     "Content-Type": "application/json",
   };
 }
@@ -740,6 +1158,11 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
     throw payload;
   }
   return payload as T;
+}
+
+function emptyToUndefined(value: string): string | undefined {
+  const trimmed = value.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function errorMessage(error: unknown): string {

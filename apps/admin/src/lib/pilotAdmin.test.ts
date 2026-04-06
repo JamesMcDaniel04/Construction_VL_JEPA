@@ -11,8 +11,10 @@ describe("pilotAdmin helpers", () => {
     expect(helpfulRateLabel(0.534)).toBe("53%");
   });
 
-  it("builds the one-time invite message", () => {
-    expect(inviteIssuedMessage("Alex", "token-123")).toContain("Alex");
-    expect(inviteIssuedMessage("Alex", "token-123")).toContain("token-123");
+  it("builds the invite status message", () => {
+    expect(inviteIssuedMessage("Alex", "alex@example.com", "sent")).toContain("Alex");
+    expect(inviteIssuedMessage("Alex", "alex@example.com", "sent")).toContain(
+      "alex@example.com",
+    );
   });
 });

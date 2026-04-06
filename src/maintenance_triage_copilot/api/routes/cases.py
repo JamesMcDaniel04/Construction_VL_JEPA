@@ -28,17 +28,22 @@ async def create_case(request_body: TriageCaseCreateRequest, request: Request) -
     identity = current_identity(request)
     role = UserRole(identity["role"])
     organization_id = cast(str | None, identity["organization_id"])
-    if role == UserRole.service:
-        organization_id = str(request_body.metadata.get("organization_id", "service-default"))
-    if organization_id is None:
+    if organization_id is None and role != UserRole.service:
         raise HTTPException(status_code=400, detail="Organization context is required")
-    triage_case = request.app.state.service.create_case(
-        request_body,
-        organization_id=organization_id,
-        user_id=cast(str, identity["user_id"] or identity["principal"]),
-        display_name=cast(str, identity["display_name"]),
-        role=role,
-    )
+    try:
+        triage_case = request.app.state.service.create_case(
+            request_body,
+            organization_id=organization_id or "",
+            user_id=cast(str, identity["user_id"] or identity["principal"]),
+            display_name=cast(str, identity["display_name"]),
+            role=role,
+        )
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return cast(TriageCase, triage_case)
 
 

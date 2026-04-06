@@ -39,6 +39,15 @@ security:
   service_tokens: {}
   require_auth_in_production: true
 
+supabase:
+  project_url: null
+  anon_key: null
+  service_role_key: null
+  jwt_issuer: null
+  jwt_audience: null
+  mobile_redirect_scheme: "mtc://auth/callback"
+  web_redirect_url: "http://localhost:5173/auth/callback"
+
 telemetry:
   prometheus_enabled: true
   otlp_endpoint: null

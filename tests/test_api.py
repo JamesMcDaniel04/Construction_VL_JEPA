@@ -22,7 +22,7 @@ def test_system_health(client) -> None:
     assert response.json()["components"]["metadata_store"]["metadata_store"] == "sqlalchemy"
     assert response.json()["components"]["projector"]["checkpoint_loaded"] is True
     assert response.json()["components"]["manifest"]["validated"] is True
-    assert response.json()["components"]["auth"]["mode"] == "bearer"
+    assert response.json()["components"]["auth"]["mode"] == "hybrid_bearer"
     assert "X-Request-Duration-Ms" in response.headers
     assert "X-Request-ID" in response.headers
 
@@ -305,6 +305,7 @@ def test_auth_me_returns_pilot_identity(technician_client, admin_client) -> None
     assert technician_response.json()["principal_type"] == "human"
     assert technician_response.json()["role"] == "technician"
     assert technician_response.json()["organization_id"] == "org-1"
+    assert technician_response.json()["email"] == "alex@example.com"
 
     admin_response = admin_client.get("/auth/me")
     assert admin_response.status_code == 200
@@ -325,18 +326,44 @@ def test_admin_can_invite_persisted_pilot_user(admin_client) -> None:
     assert invite_response.status_code == 200
     payload = invite_response.json()
     assert payload["user"]["display_name"] == "Jordan Newhire"
-    assert payload["bearer_token"].startswith("mtc-user-")
+    assert payload["invite_status"] == "sent"
 
     list_response = admin_client.get("/admin/pilot-users")
     assert list_response.status_code == 200
     assert any(item["display_name"] == "Jordan Newhire" for item in list_response.json()["items"])
 
-    invited_client = admin_client
-    invited_client.headers.update({"Authorization": f"Bearer {payload['bearer_token']}"})
-    me_response = invited_client.get("/auth/me")
-    assert me_response.status_code == 200
-    assert me_response.json()["display_name"] == "Jordan Newhire"
-    assert me_response.json()["role"] == "technician"
+
+def test_catalog_endpoints_scope_assets_and_sites(admin_client, technician_client) -> None:
+    site_response = admin_client.post(
+        "/catalog/sites",
+        json={
+            "site_id": "site-c",
+            "name": "Line C",
+            "code": "C1",
+        },
+    )
+    assert site_response.status_code == 200
+
+    asset_response = admin_client.post(
+        "/catalog/assets",
+        json={
+            "asset_id": "panel-88",
+            "site_id": "site-c",
+            "display_name": "Panel 88",
+            "panel_family": "family-b",
+            "equipment_family": "electrical_panel_family_b",
+            "panel_id": "panel-88",
+        },
+    )
+    assert asset_response.status_code == 200
+
+    sites = technician_client.get("/catalog/sites")
+    assert sites.status_code == 200
+    assert any(item["site_id"] == "site-c" for item in sites.json()["items"])
+
+    assets = technician_client.get("/catalog/assets", params={"site_id": "site-c"})
+    assert assets.status_code == 200
+    assert assets.json()["items"][0]["asset_id"] == "panel-88"
 
 
 def test_case_lifecycle_for_technician(client, technician_client, monkeypatch) -> None:
@@ -388,14 +415,14 @@ def test_case_lifecycle_for_technician(client, technician_client, monkeypatch) -
         json={
             "site_id": "site-a",
             "asset_id": "panel-42",
-            "panel_family": "family-a",
-            "panel_id": "panel-42a",
             "question": "What is likely causing this red light?",
             "expected_state_label": "fault_light_on",
         },
     )
     assert create_response.status_code == 200
     case_id = create_response.json()["case_id"]
+    assert create_response.json()["panel_family"] == "family-a"
+    assert create_response.json()["panel_id"] == "panel-42a"
 
     analyze_response = technician_client.post(
         f"/cases/{case_id}/analyze",
@@ -434,7 +461,6 @@ def test_case_analyze_rejects_low_quality_capture(technician_client, monkeypatch
         json={
             "site_id": "site-b",
             "asset_id": "panel-77",
-            "panel_family": "family-a",
         },
     )
     case_id = create_response.json()["case_id"]

@@ -44,8 +44,14 @@ services:
       MTC_OBJECT_STORE_ACCESS_KEY: "${MTC_OBJECT_STORE_ACCESS_KEY:-minioadmin}"
       MTC_OBJECT_STORE_SECRET_KEY: "${MTC_OBJECT_STORE_SECRET_KEY:-minioadmin}"
       MTC_SERVICE_TOKENS_JSON: '${MTC_SERVICE_TOKENS_JSON:-{"compose-smoke":"smoke-token"}}'
-      MTC_PILOT_USERS_JSON: '${MTC_PILOT_USERS_JSON:-[{"user_id":"admin-bootstrap","token":"admin-bootstrap-token","organization_id":"org-1","role":"admin","display_name":"Bootstrap Admin","email":"admin@example.com"}]}'
       MTC_ALLOW_SMOKE_ASSETS: "${MTC_ALLOW_SMOKE_ASSETS:-0}"
+      MTC_SUPABASE_PROJECT_URL: "${MTC_SUPABASE_PROJECT_URL:-}"
+      MTC_SUPABASE_ANON_KEY: "${MTC_SUPABASE_ANON_KEY:-}"
+      MTC_SUPABASE_SERVICE_ROLE_KEY: "${MTC_SUPABASE_SERVICE_ROLE_KEY:-}"
+      MTC_SUPABASE_JWT_ISSUER: "${MTC_SUPABASE_JWT_ISSUER:-}"
+      MTC_SUPABASE_JWT_AUDIENCE: "${MTC_SUPABASE_JWT_AUDIENCE:-authenticated}"
+      MTC_SUPABASE_MOBILE_REDIRECT_SCHEME: "${MTC_SUPABASE_MOBILE_REDIRECT_SCHEME:-mtc://auth/callback}"
+      MTC_SUPABASE_WEB_REDIRECT_URL: "${MTC_SUPABASE_WEB_REDIRECT_URL:-http://localhost:5173/auth/callback}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -67,6 +73,9 @@ services:
         condition: service_started
     environment:
       VITE_MTC_API_BASE_URL: "${VITE_MTC_API_BASE_URL:-http://localhost:8000}"
+      VITE_SUPABASE_URL: "${VITE_SUPABASE_URL:-}"
+      VITE_SUPABASE_ANON_KEY: "${VITE_SUPABASE_ANON_KEY:-}"
+      VITE_SUPABASE_WEB_REDIRECT_URL: "${VITE_SUPABASE_WEB_REDIRECT_URL:-http://localhost:5173/auth/callback}"
     command: >
       sh -lc "npm install && npm --workspace apps/admin run dev -- --host 0.0.0.0 --port 5173"
     ports:
@@ -84,6 +93,9 @@ services:
     environment:
       EXPO_NO_TELEMETRY: "1"
       EXPO_PUBLIC_MTC_API_BASE_URL: "${EXPO_PUBLIC_MTC_API_BASE_URL:-http://localhost:8000}"
+      EXPO_PUBLIC_SUPABASE_URL: "${EXPO_PUBLIC_SUPABASE_URL:-}"
+      EXPO_PUBLIC_SUPABASE_ANON_KEY: "${EXPO_PUBLIC_SUPABASE_ANON_KEY:-}"
+      EXPO_PUBLIC_SUPABASE_MOBILE_REDIRECT_URL: "${EXPO_PUBLIC_SUPABASE_MOBILE_REDIRECT_URL:-mtc://auth/callback}"
     command: >
       sh -lc "npm install && npm --workspace apps/mobile run start -- --non-interactive"
     ports:

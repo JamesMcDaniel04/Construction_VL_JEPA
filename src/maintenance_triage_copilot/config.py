@@ -87,6 +87,28 @@ class SecurityConfig:
 
 
 @dataclass
+class SupabaseConfig:
+    project_url: str | None = None
+    anon_key: str | None = None
+    service_role_key: str | None = None
+    jwt_issuer: str | None = None
+    jwt_audience: str | None = None
+    mobile_redirect_scheme: str = "mtc://auth/callback"
+    web_redirect_url: str = "http://localhost:5173/auth/callback"
+
+    def jwks_url(self) -> str | None:
+        if self.project_url is None:
+            return None
+        return self.project_url.rstrip("/") + "/auth/v1/.well-known/jwks.json"
+
+    def configured_for_human_auth(self) -> bool:
+        return bool(self.project_url and self.anon_key and self.jwt_issuer and self.jwt_audience)
+
+    def configured_for_invites(self) -> bool:
+        return bool(self.project_url and self.service_role_key)
+
+
+@dataclass
 class TelemetryConfig:
     prometheus_enabled: bool = True
     otlp_endpoint: str | None = None
@@ -146,6 +168,7 @@ class AppConfig:
     triage: TriageConfig = field(default_factory=TriageConfig)
     policy: PolicyConfig = field(default_factory=PolicyConfig)
     security: SecurityConfig = field(default_factory=SecurityConfig)
+    supabase: SupabaseConfig = field(default_factory=SupabaseConfig)
     telemetry: TelemetryConfig = field(default_factory=TelemetryConfig)
     object_store: ObjectStoreConfig = field(default_factory=ObjectStoreConfig)
     text_encoder: TextEncoderConfig = field(default_factory=TextEncoderConfig)
@@ -214,3 +237,24 @@ def _apply_env_overrides(cfg: AppConfig) -> None:
         cfg.telemetry.otlp_endpoint = otlp_endpoint
     if os.getenv("MTC_ALLOW_SMOKE_ASSETS") == "1":
         cfg.runtime.allow_smoke_assets = True
+    project_url = os.getenv("MTC_SUPABASE_PROJECT_URL")
+    if project_url:
+        cfg.supabase.project_url = project_url
+    anon_key = os.getenv("MTC_SUPABASE_ANON_KEY")
+    if anon_key:
+        cfg.supabase.anon_key = anon_key
+    service_role_key = os.getenv("MTC_SUPABASE_SERVICE_ROLE_KEY")
+    if service_role_key:
+        cfg.supabase.service_role_key = service_role_key
+    jwt_issuer = os.getenv("MTC_SUPABASE_JWT_ISSUER")
+    if jwt_issuer:
+        cfg.supabase.jwt_issuer = jwt_issuer
+    jwt_audience = os.getenv("MTC_SUPABASE_JWT_AUDIENCE")
+    if jwt_audience:
+        cfg.supabase.jwt_audience = jwt_audience
+    mobile_redirect_scheme = os.getenv("MTC_SUPABASE_MOBILE_REDIRECT_SCHEME")
+    if mobile_redirect_scheme:
+        cfg.supabase.mobile_redirect_scheme = mobile_redirect_scheme
+    web_redirect_url = os.getenv("MTC_SUPABASE_WEB_REDIRECT_URL")
+    if web_redirect_url:
+        cfg.supabase.web_redirect_url = web_redirect_url

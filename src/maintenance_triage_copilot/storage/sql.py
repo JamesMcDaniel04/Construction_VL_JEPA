@@ -8,11 +8,13 @@ from sqlalchemy import JSON, Column, Integer, String, create_engine, func, selec
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from maintenance_triage_copilot.domain.models import (
+    AssetRecord,
     CorpusDocument,
     IncidentRecord,
     MediaAssetRecord,
     PilotUser,
     ReferenceState,
+    SiteRecord,
     TriageAuditRecord,
     TriageCase,
     TriageResponse,
@@ -70,8 +72,28 @@ class PilotUserRecordORM(Base):
 
     user_id = Column(String, primary_key=True)
     organization_id = Column(String, nullable=False, index=True)
+    email = Column(String, nullable=False, index=True)
     role = Column(String, nullable=False, index=True)
     created_at = Column(String, nullable=False, index=True)
+    payload = Column(JSON, nullable=False)
+
+
+class SiteRecordORM(Base):
+    __tablename__ = "sites"
+
+    site_id = Column(String, primary_key=True)
+    organization_id = Column(String, nullable=False, index=True)
+    active = Column(String, nullable=False, index=True)
+    payload = Column(JSON, nullable=False)
+
+
+class AssetCatalogRecordORM(Base):
+    __tablename__ = "assets"
+
+    asset_id = Column(String, primary_key=True)
+    organization_id = Column(String, nullable=False, index=True)
+    site_id = Column(String, nullable=False, index=True)
+    active = Column(String, nullable=False, index=True)
     payload = Column(JSON, nullable=False)
 
 
@@ -218,6 +240,7 @@ class SqlAlchemyMetadataStore:
                 PilotUserRecordORM(
                     user_id=pilot_user.user_id,
                     organization_id=pilot_user.organization_id,
+                    email=pilot_user.email,
                     role=pilot_user.role.value,
                     created_at=pilot_user.created_at.isoformat(),
                     payload=payload,
@@ -232,6 +255,18 @@ class SqlAlchemyMetadataStore:
             payload = self._payload(record.payload)
         return PilotUser.model_validate(payload)
 
+    def get_pilot_user_by_email(self, email: str) -> PilotUser | None:
+        with self.session_factory() as session:
+            record = session.scalar(
+                select(PilotUserRecordORM)
+                .where(PilotUserRecordORM.email == email.strip().lower())
+                .limit(1)
+            )
+            if record is None:
+                return None
+            payload = self._payload(record.payload)
+        return PilotUser.model_validate(payload)
+
     def list_pilot_users(self, limit: int, offset: int) -> list[PilotUser]:
         with self.session_factory() as session:
             rows = session.scalars(
@@ -241,6 +276,109 @@ class SqlAlchemyMetadataStore:
                 .limit(limit)
             ).all()
         return [PilotUser.model_validate(self._payload(row.payload)) for row in rows]
+
+    def add_site(self, site: SiteRecord) -> None:
+        payload = site.model_dump(mode="json")
+        with self.session_factory.begin() as session:
+            session.merge(
+                SiteRecordORM(
+                    site_id=site.site_id,
+                    organization_id=site.organization_id,
+                    active=str(site.active).lower(),
+                    payload=payload,
+                )
+            )
+
+    def get_site(self, site_id: str) -> SiteRecord | None:
+        with self.session_factory() as session:
+            record = session.get(SiteRecordORM, site_id)
+            if record is None:
+                return None
+            payload = self._payload(record.payload)
+        return SiteRecord.model_validate(payload)
+
+    def list_sites(
+        self,
+        limit: int,
+        offset: int,
+        *,
+        organization_id: str | None = None,
+        query: str | None = None,
+        active_only: bool = False,
+    ) -> list[SiteRecord]:
+        with self.session_factory() as session:
+            stmt = select(SiteRecordORM)
+            if organization_id is not None:
+                stmt = stmt.where(SiteRecordORM.organization_id == organization_id)
+            if active_only:
+                stmt = stmt.where(SiteRecordORM.active == "true")
+            stmt = stmt.order_by(SiteRecordORM.site_id.asc())
+            rows = session.scalars(stmt).all()
+        items = [SiteRecord.model_validate(self._payload(row.payload)) for row in rows]
+        if query:
+            lowered = query.strip().lower()
+            items = [
+                item
+                for item in items
+                if lowered in item.name.lower()
+                or lowered in (item.code or "").lower()
+                or lowered in item.site_id.lower()
+            ]
+        return items[offset : offset + limit]
+
+    def add_asset_catalog_record(self, asset: AssetRecord) -> None:
+        payload = asset.model_dump(mode="json")
+        with self.session_factory.begin() as session:
+            session.merge(
+                AssetCatalogRecordORM(
+                    asset_id=asset.asset_id,
+                    organization_id=asset.organization_id,
+                    site_id=asset.site_id,
+                    active=str(asset.active).lower(),
+                    payload=payload,
+                )
+            )
+
+    def get_asset_catalog_record(self, asset_id: str) -> AssetRecord | None:
+        with self.session_factory() as session:
+            record = session.get(AssetCatalogRecordORM, asset_id)
+            if record is None:
+                return None
+            payload = self._payload(record.payload)
+        return AssetRecord.model_validate(payload)
+
+    def list_asset_catalog_records(
+        self,
+        limit: int,
+        offset: int,
+        *,
+        organization_id: str | None = None,
+        site_id: str | None = None,
+        query: str | None = None,
+        active_only: bool = False,
+    ) -> list[AssetRecord]:
+        with self.session_factory() as session:
+            stmt = select(AssetCatalogRecordORM)
+            if organization_id is not None:
+                stmt = stmt.where(AssetCatalogRecordORM.organization_id == organization_id)
+            if site_id is not None:
+                stmt = stmt.where(AssetCatalogRecordORM.site_id == site_id)
+            if active_only:
+                stmt = stmt.where(AssetCatalogRecordORM.active == "true")
+            stmt = stmt.order_by(AssetCatalogRecordORM.asset_id.asc())
+            rows = session.scalars(stmt).all()
+        items = [AssetRecord.model_validate(self._payload(row.payload)) for row in rows]
+        if query:
+            lowered = query.strip().lower()
+            items = [
+                item
+                for item in items
+                if lowered in item.display_name.lower()
+                or lowered in item.asset_id.lower()
+                or lowered in item.panel_family.lower()
+                or lowered in (item.panel_id or "").lower()
+            ]
+        return items[offset : offset + limit]
 
     def add_media_asset(self, asset: MediaAssetRecord) -> None:
         payload = asset.model_dump(mode="json")
@@ -300,6 +438,8 @@ class SqlAlchemyMetadataStore:
             reference_state_count = self._count(session, ReferenceStateRecord)
             triage_case_count = self._count(session, TriageCaseRecordORM)
             pilot_user_count = self._count(session, PilotUserRecordORM)
+            site_count = self._count(session, SiteRecordORM)
+            asset_count = self._count(session, AssetCatalogRecordORM)
             media_asset_count = self._count(session, MediaAssetRecordORM)
             audit_count = self._count(session, TriageAuditRecordORM)
         return {
@@ -309,6 +449,8 @@ class SqlAlchemyMetadataStore:
             "reference_states": str(reference_state_count),
             "triage_cases": str(triage_case_count),
             "pilot_users": str(pilot_user_count),
+            "sites": str(site_count),
+            "assets": str(asset_count),
             "media_assets": str(media_asset_count),
             "triage_audits": str(audit_count),
         }

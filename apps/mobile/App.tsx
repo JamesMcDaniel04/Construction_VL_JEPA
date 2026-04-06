@@ -1,5 +1,8 @@
-import type { ReactNode } from "react";
+import "react-native-url-polyfill/auto";
+
+import type { Dispatch, ReactNode, SetStateAction } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { createClient, type Session } from "@supabase/supabase-js";
 import * as ImagePicker from "expo-image-picker";
 import { StatusBar } from "expo-status-bar";
 import { startTransition, useEffect, useMemo, useState } from "react";
@@ -7,6 +10,7 @@ import {
   ActivityIndicator,
   Alert,
   Image,
+  Linking,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -28,6 +32,26 @@ type Identity = {
   user_id?: string | null;
   organization_id?: string | null;
   display_name: string;
+  email?: string | null;
+};
+
+type SiteRecord = {
+  site_id: string;
+  organization_id: string;
+  name: string;
+  code?: string | null;
+  active: boolean;
+};
+
+type AssetRecord = {
+  asset_id: string;
+  organization_id: string;
+  site_id: string;
+  display_name: string;
+  panel_family: string;
+  equipment_family: string;
+  panel_id?: string | null;
+  active: boolean;
 };
 
 type CaptureAsset = {
@@ -40,8 +64,6 @@ type CaptureAsset = {
 type DraftCase = {
   siteId: string;
   assetId: string;
-  panelFamily: string;
-  panelId: string;
   question: string;
   operatorContext: string;
   expectedStateLabel: string;
@@ -97,15 +119,20 @@ type CaseDetail = {
   feedback?: { labels: string[]; comment?: string | null } | null;
 };
 
-const SESSION_KEY = "mtc.mobile.session";
 const DRAFT_KEY = "mtc.mobile.draft";
+const RECENT_ASSET_IDS_KEY = "mtc.mobile.recent-assets";
+const DEV_API_BASE_KEY = "mtc.mobile.dev-api-base";
 const DEFAULT_API_BASE_URL =
   process.env.EXPO_PUBLIC_MTC_API_BASE_URL ?? "http://localhost:8000";
+const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL ?? "";
+const SUPABASE_ANON_KEY = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ?? "";
+const MOBILE_REDIRECT_URL =
+  process.env.EXPO_PUBLIC_SUPABASE_MOBILE_REDIRECT_URL ?? "mtc://auth/callback";
+const DEBUG_OVERRIDE_ENABLED =
+  __DEV__ || process.env.EXPO_PUBLIC_MTC_ENABLE_DEBUG_OVERRIDE === "1";
 const DEFAULT_DRAFT: DraftCase = {
   siteId: "",
   assetId: "",
-  panelFamily: "electrical_panel_family_a",
-  panelId: "",
   question: "",
   operatorContext: "",
   expectedStateLabel: "",
@@ -113,120 +140,324 @@ const DEFAULT_DRAFT: DraftCase = {
   selectedMedia: null,
 };
 
+const supabase =
+  SUPABASE_URL && SUPABASE_ANON_KEY
+    ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+        auth: {
+          storage: AsyncStorage as never,
+          autoRefreshToken: true,
+          persistSession: true,
+          detectSessionInUrl: false,
+        },
+      })
+    : null;
+
 export default function App() {
   const [apiBaseUrl, setApiBaseUrl] = useState(DEFAULT_API_BASE_URL);
-  const [token, setToken] = useState("");
   const [identity, setIdentity] = useState<Identity | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
   const [draft, setDraft] = useState<DraftCase>(DEFAULT_DRAFT);
   const [recentCases, setRecentCases] = useState<CaseSummary[]>([]);
   const [selectedCase, setSelectedCase] = useState<CaseDetail | null>(null);
+  const [sites, setSites] = useState<SiteRecord[]>([]);
+  const [assets, setAssets] = useState<AssetRecord[]>([]);
+  const [recentAssetIds, setRecentAssetIds] = useState<string[]>([]);
   const [loadingSession, setLoadingSession] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [loadingCatalog, setLoadingCatalog] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [captureHints, setCaptureHints] = useState<string[]>([]);
+  const [authEmail, setAuthEmail] = useState("");
+  const [loginMessage, setLoginMessage] = useState<string | null>(null);
+  const [siteQuery, setSiteQuery] = useState("");
+  const [assetQuery, setAssetQuery] = useState("");
+  const [developerTapCount, setDeveloperTapCount] = useState(0);
+  const [debugVisible, setDebugVisible] = useState(false);
+  const [debugApiBaseUrl, setDebugApiBaseUrl] = useState(DEFAULT_API_BASE_URL);
 
-  useEffect(() => {
-    void loadPersistedState();
-  }, []);
-
-  useEffect(() => {
-    if (identity !== null) {
-      void AsyncStorage.setItem(
-        SESSION_KEY,
-        JSON.stringify({ apiBaseUrl, token, identity }),
-      );
+  const selectedSite = useMemo(
+    () => sites.find((item) => item.site_id === draft.siteId) ?? null,
+    [draft.siteId, sites],
+  );
+  const selectedAsset = useMemo(
+    () => assets.find((item) => item.asset_id === draft.assetId) ?? null,
+    [assets, draft.assetId],
+  );
+  const filteredSites = useMemo(() => {
+    const query = siteQuery.trim().toLowerCase();
+    if (!query) {
+      return sites;
     }
-  }, [apiBaseUrl, identity, token]);
+    return sites.filter((site) => {
+      return (
+        site.name.toLowerCase().includes(query) ||
+        site.site_id.toLowerCase().includes(query) ||
+        (site.code ?? "").toLowerCase().includes(query)
+      );
+    });
+  }, [siteQuery, sites]);
+  const recentAssets = useMemo(() => {
+    const byId = new Map(assets.map((asset) => [asset.asset_id, asset]));
+    return recentAssetIds
+      .map((assetId) => byId.get(assetId))
+      .filter((asset): asset is AssetRecord => asset != null);
+  }, [assets, recentAssetIds]);
+  const pendingLabel = useMemo(() => pendingCaseLabel(draft.pendingCaseId), [draft.pendingCaseId]);
+
+  useEffect(() => {
+    void loadBootstrapState();
+  }, []);
 
   useEffect(() => {
     if (!loadingSession) {
       void AsyncStorage.setItem(DRAFT_KEY, JSON.stringify(draft));
+      void AsyncStorage.setItem(RECENT_ASSET_IDS_KEY, JSON.stringify(recentAssetIds));
     }
-  }, [draft, loadingSession]);
+  }, [draft, loadingSession, recentAssetIds]);
 
-  const pendingLabel = useMemo(() => {
-    return pendingCaseLabel(draft.pendingCaseId);
-  }, [draft.pendingCaseId]);
+  useEffect(() => {
+    if (!DEBUG_OVERRIDE_ENABLED) {
+      return;
+    }
+    void AsyncStorage.setItem(DEV_API_BASE_KEY, debugApiBaseUrl);
+  }, [debugApiBaseUrl]);
 
-  async function loadPersistedState() {
-    try {
-      const [sessionRaw, draftRaw] = await Promise.all([
-        AsyncStorage.getItem(SESSION_KEY),
-        AsyncStorage.getItem(DRAFT_KEY),
-      ]);
-      let restoredDraft = DEFAULT_DRAFT;
-      if (draftRaw) {
-        restoredDraft = restoreDraftCase(DEFAULT_DRAFT, draftRaw);
-        setDraft(restoredDraft);
+  useEffect(() => {
+    if (!supabase) {
+      return undefined;
+    }
+
+    const subscription = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      if (!loadingSession) {
+        if (nextSession) {
+          void connectWithSession(nextSession, {
+            silent: true,
+            pendingCaseId: draft.pendingCaseId ?? null,
+          });
+        } else {
+          setIdentity(null);
+          setRecentCases([]);
+          setSelectedCase(null);
+          setSites([]);
+          setAssets([]);
+        }
       }
-      if (sessionRaw) {
-        const session = JSON.parse(sessionRaw) as {
-          apiBaseUrl: string;
-          token: string;
-          identity: Identity;
-        };
-        setApiBaseUrl(session.apiBaseUrl);
-        setToken(session.token);
-        await connectWithCredentials(session.apiBaseUrl, session.token, {
+    });
+
+    void Linking.getInitialURL().then((url) => {
+      if (url) {
+        void handleIncomingUrl(url);
+      }
+    });
+    const linkSubscription = Linking.addEventListener("url", ({ url }) => {
+      void handleIncomingUrl(url);
+    });
+
+    return () => {
+      subscription.data.subscription.unsubscribe();
+      linkSubscription.remove();
+    };
+  }, [apiBaseUrl, draft.pendingCaseId, loadingSession]);
+
+  useEffect(() => {
+    if (!identity || !draft.siteId) {
+      setAssets([]);
+      return;
+    }
+    void loadAssets();
+  }, [apiBaseUrl, assetQuery, draft.siteId, identity, session]);
+
+  async function loadBootstrapState() {
+    try {
+      const [draftRaw, recentRaw, debugBaseUrl, sessionResponse] = await Promise.all([
+        AsyncStorage.getItem(DRAFT_KEY),
+        AsyncStorage.getItem(RECENT_ASSET_IDS_KEY),
+        DEBUG_OVERRIDE_ENABLED ? AsyncStorage.getItem(DEV_API_BASE_KEY) : Promise.resolve(null),
+        supabase?.auth.getSession() ?? Promise.resolve({ data: { session: null } }),
+      ]);
+
+      const restoredDraft = restoreDraftCase(DEFAULT_DRAFT, draftRaw);
+      setDraft(restoredDraft);
+
+      if (recentRaw) {
+        try {
+          const parsed = JSON.parse(recentRaw) as string[];
+          setRecentAssetIds(Array.isArray(parsed) ? parsed : []);
+        } catch {
+          setRecentAssetIds([]);
+        }
+      }
+
+      const resolvedBaseUrl = debugBaseUrl?.trim() ? debugBaseUrl.trim() : DEFAULT_API_BASE_URL;
+      setApiBaseUrl(resolvedBaseUrl);
+      setDebugApiBaseUrl(resolvedBaseUrl);
+
+      const restoredSession = sessionResponse.data.session;
+      setSession(restoredSession);
+      if (restoredSession) {
+        await connectWithSession(restoredSession, {
           silent: true,
           pendingCaseId: restoredDraft.pendingCaseId ?? null,
         });
       }
     } catch (error) {
       setSyncMessage(errorMessage(error));
-      await AsyncStorage.removeItem(SESSION_KEY);
       setIdentity(null);
-      setToken("");
+      setSession(null);
     } finally {
       setLoadingSession(false);
     }
   }
 
-  async function connect() {
-    setSubmitting(true);
-    setSyncMessage(null);
+  async function handleIncomingUrl(url: string) {
+    if (!supabase) {
+      return;
+    }
+    const params = extractUrlParams(url);
+    const accessToken = params.get("access_token");
+    const refreshToken = params.get("refresh_token");
+    const code = params.get("code");
+    if (!accessToken && !code) {
+      return;
+    }
     try {
-      await connectWithCredentials(apiBaseUrl, token, {
-        silent: false,
-        pendingCaseId: draft.pendingCaseId ?? null,
-      });
+      if (accessToken && refreshToken) {
+        const { data, error } = await supabase.auth.setSession({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        });
+        if (error) {
+          throw error;
+        }
+        if (data.session) {
+          await connectWithSession(data.session, {
+            silent: false,
+            pendingCaseId: draft.pendingCaseId ?? null,
+          });
+        }
+      } else if (code) {
+        const { data, error } = await supabase.auth.exchangeCodeForSession(url);
+        if (error) {
+          throw error;
+        }
+        if (data.session) {
+          await connectWithSession(data.session, {
+            silent: false,
+            pendingCaseId: draft.pendingCaseId ?? null,
+          });
+        }
+      }
+      setLoginMessage("Signed in. Restoring your pilot workspace…");
     } catch (error) {
-      Alert.alert("Connection failed", errorMessage(error));
+      setLoginMessage(errorMessage(error));
+    }
+  }
+
+  async function sendMagicLink() {
+    if (!supabase) {
+      Alert.alert(
+        "Supabase not configured",
+        "Set EXPO_PUBLIC_SUPABASE_URL and EXPO_PUBLIC_SUPABASE_ANON_KEY for the mobile pilot build.",
+      );
+      return;
+    }
+    if (!authEmail.trim()) {
+      Alert.alert("Email required", "Enter the invited email address for this pilot.");
+      return;
+    }
+    setSubmitting(true);
+    setLoginMessage(null);
+    try {
+      const { error } = await supabase.auth.signInWithOtp({
+        email: authEmail.trim().toLowerCase(),
+        options: { emailRedirectTo: MOBILE_REDIRECT_URL },
+      });
+      if (error) {
+        throw error;
+      }
+      setLoginMessage("Magic link sent. Open it on this device to finish sign-in.");
+    } catch (error) {
+      setLoginMessage(errorMessage(error));
     } finally {
       setSubmitting(false);
     }
   }
 
-  async function connectWithCredentials(
-    baseUrl: string,
-    bearer: string,
+  async function connectWithSession(
+    nextSession: Session,
     options: { silent: boolean; pendingCaseId: string | null },
   ) {
-    const me = await fetchJson<Identity>(`${baseUrl}/auth/me`, {
-      headers: authHeaders(bearer),
+    const me = await fetchJson<Identity>(`${apiBaseUrl}/auth/me`, {
+      headers: authHeaders(nextSession.access_token),
     });
     setIdentity(me);
-    await refreshCases(baseUrl, bearer);
+    await Promise.all([
+      refreshCases(nextSession.access_token),
+      loadSites(nextSession.access_token),
+    ]);
     if (options.pendingCaseId) {
       await openCase(options.pendingCaseId, {
-        baseUrl,
-        bearer,
+        accessToken: nextSession.access_token,
         preservePending: true,
       });
       if (!options.silent) {
         setSyncMessage(`Restored pending case ${options.pendingCaseId}.`);
       }
+    } else if (!options.silent) {
+      setSyncMessage("Signed in.");
     }
   }
 
-  async function refreshCases(baseUrl = apiBaseUrl, bearer = token) {
+  async function refreshCases(accessToken = session?.access_token) {
+    if (!accessToken) {
+      return;
+    }
     try {
-      const payload = await fetchJson<{ items: CaseSummary[] }>(`${baseUrl}/cases`, {
-        headers: authHeaders(bearer),
+      const payload = await fetchJson<{ items: CaseSummary[] }>(`${apiBaseUrl}/cases`, {
+        headers: authHeaders(accessToken),
       });
       startTransition(() => {
         setRecentCases(payload.items);
       });
+    } catch (error) {
+      setSyncMessage(errorMessage(error));
+    }
+  }
+
+  async function loadSites(accessToken = session?.access_token) {
+    if (!accessToken) {
+      return;
+    }
+    setLoadingCatalog(true);
+    try {
+      const payload = await fetchJson<{ items: SiteRecord[] }>(`${apiBaseUrl}/catalog/sites`, {
+        headers: authHeaders(accessToken),
+      });
+      setSites(payload.items);
+    } catch (error) {
+      setSyncMessage(errorMessage(error));
+    } finally {
+      setLoadingCatalog(false);
+    }
+  }
+
+  async function loadAssets(accessToken = session?.access_token) {
+    if (!accessToken || !draft.siteId) {
+      return;
+    }
+    try {
+      const params = new URLSearchParams({ site_id: draft.siteId });
+      if (assetQuery.trim()) {
+        params.set("q", assetQuery.trim());
+      }
+      const payload = await fetchJson<{ items: AssetRecord[] }>(
+        `${apiBaseUrl}/catalog/assets?${params.toString()}`,
+        {
+          headers: authHeaders(accessToken),
+        },
+      );
+      setAssets(payload.items);
     } catch (error) {
       setSyncMessage(errorMessage(error));
     }
@@ -257,24 +488,23 @@ export default function App() {
       selectedMedia: {
         uri: asset.uri,
         name: asset.fileName ?? `capture.${mediaType === "image" ? "jpg" : "mp4"}`,
-        mimeType:
-          asset.mimeType ?? (mediaType === "image" ? "image/jpeg" : "video/mp4"),
+        mimeType: asset.mimeType ?? (mediaType === "image" ? "image/jpeg" : "video/mp4"),
         mediaType,
       },
     }));
   }
 
   async function analyzeCase() {
-    if (!identity) {
-      Alert.alert("Not connected", "Sign in before creating a triage case.");
+    if (!identity || !session) {
+      Alert.alert("Sign in required", "Sign in before creating a triage case.");
       return;
     }
     if (!draft.selectedMedia) {
       Alert.alert("Capture required", "Capture a photo or short clip before analysis.");
       return;
     }
-    if (!draft.siteId || !draft.assetId || !draft.panelFamily) {
-      Alert.alert("Missing case details", "Site, asset, and panel family are required.");
+    if (!draft.siteId || !draft.assetId) {
+      Alert.alert("Missing case details", "Select a site and asset before analysis.");
       return;
     }
     setSubmitting(true);
@@ -283,14 +513,12 @@ export default function App() {
     let caseId = draft.pendingCaseId;
     try {
       if (!caseId) {
-        const created = await fetchJson<{ case_id: string }>(`${apiBaseUrl}/cases`, {
+        const created = await fetchJson<CaseDetail>(`${apiBaseUrl}/cases`, {
           method: "POST",
-          headers: authHeaders(token),
+          headers: authHeaders(session.access_token),
           body: JSON.stringify({
             site_id: draft.siteId,
             asset_id: draft.assetId,
-            panel_family: draft.panelFamily,
-            panel_id: emptyToNull(draft.panelId),
             question: emptyToNull(draft.question),
             operator_context: emptyToNull(draft.operatorContext),
             expected_state_label: emptyToNull(draft.expectedStateLabel),
@@ -301,24 +529,28 @@ export default function App() {
       }
 
       const form = new FormData();
-      form.append("file", {
-        uri: draft.selectedMedia.uri,
-        name: draft.selectedMedia.name,
-        type: draft.selectedMedia.mimeType,
-      } as never);
+      form.append(
+        "file",
+        {
+          uri: draft.selectedMedia.uri,
+          name: draft.selectedMedia.name,
+          type: draft.selectedMedia.mimeType,
+        } as never,
+      );
       const analyzed = await fetchJson<CaseDetail>(`${apiBaseUrl}/cases/${caseId}/analyze`, {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${token}`,
+          Authorization: `Bearer ${session.access_token}`,
         },
         body: form,
       });
       setSelectedCase(analyzed);
+      rememberRecentAsset(draft.assetId);
       setDraft((current) => ({
         ...DEFAULT_DRAFT,
         siteId: current.siteId,
         assetId: current.assetId,
-        panelFamily: current.panelFamily,
+        pendingCaseId: null,
       }));
       setSyncMessage("Analysis complete.");
       await refreshCases();
@@ -337,8 +569,12 @@ export default function App() {
     }
   }
 
+  function rememberRecentAsset(assetId: string) {
+    setRecentAssetIds((current) => [assetId, ...current.filter((item) => item !== assetId)].slice(0, 5));
+  }
+
   async function submitFeedback(labels: string[], comment?: string) {
-    if (!selectedCase) {
+    if (!selectedCase || !session) {
       return;
     }
     setSubmitting(true);
@@ -347,7 +583,7 @@ export default function App() {
         `${apiBaseUrl}/cases/${selectedCase.case_id}/feedback`,
         {
           method: "POST",
-          headers: authHeaders(token),
+          headers: authHeaders(session.access_token),
           body: JSON.stringify({ labels, comment }),
         },
       );
@@ -362,24 +598,23 @@ export default function App() {
 
   async function openCase(
     caseId: string,
-    options?: { baseUrl?: string; bearer?: string; preservePending?: boolean },
+    options?: { accessToken?: string; preservePending?: boolean },
   ) {
+    const accessToken = options?.accessToken ?? session?.access_token;
+    if (!accessToken) {
+      return;
+    }
     try {
-      const detail = await fetchJson<CaseDetail>(
-        `${options?.baseUrl ?? apiBaseUrl}/cases/${caseId}`,
-        {
-          headers: authHeaders(options?.bearer ?? token),
-        },
-      );
+      const detail = await fetchJson<CaseDetail>(`${apiBaseUrl}/cases/${caseId}`, {
+        headers: authHeaders(accessToken),
+      });
       setSelectedCase(detail);
       if (!options?.preservePending && detail.analysis) {
         setDraft((current) => ({ ...current, pendingCaseId: null }));
       }
       if (!detail.analysis) {
         setDraft((current) => ({ ...current, pendingCaseId: caseId }));
-        setSyncMessage(
-          pendingCaseStatusMessage(detail.status),
-        );
+        setSyncMessage(pendingCaseStatusMessage(detail.status));
       }
     } catch (error) {
       if (options?.preservePending) {
@@ -398,6 +633,59 @@ export default function App() {
     setSyncMessage("Pending analysis marker cleared.");
   }
 
+  async function signOut() {
+    if (supabase) {
+      await supabase.auth.signOut();
+    }
+    setIdentity(null);
+    setSession(null);
+    setSelectedCase(null);
+    setRecentCases([]);
+    setSites([]);
+    setAssets([]);
+    setLoginMessage("Signed out.");
+  }
+
+  async function saveDebugBaseUrl() {
+    const next = debugApiBaseUrl.trim() || DEFAULT_API_BASE_URL;
+    setApiBaseUrl(next);
+    if (DEBUG_OVERRIDE_ENABLED) {
+      await AsyncStorage.setItem(DEV_API_BASE_KEY, next);
+    }
+    setSyncMessage(`Developer API override set to ${next}.`);
+    setDebugVisible(false);
+    if (session) {
+      await connectWithSession(session, {
+        silent: true,
+        pendingCaseId: draft.pendingCaseId ?? null,
+      });
+    }
+  }
+
+  async function resetDebugBaseUrl() {
+    setApiBaseUrl(DEFAULT_API_BASE_URL);
+    setDebugApiBaseUrl(DEFAULT_API_BASE_URL);
+    if (DEBUG_OVERRIDE_ENABLED) {
+      await AsyncStorage.removeItem(DEV_API_BASE_KEY);
+    }
+    setSyncMessage("Developer API override cleared.");
+    setDebugVisible(false);
+  }
+
+  function onBuildLabelPress() {
+    if (!DEBUG_OVERRIDE_ENABLED) {
+      return;
+    }
+    setDeveloperTapCount((current) => {
+      const next = current + 1;
+      if (next >= 5) {
+        setDebugVisible(true);
+        return 0;
+      }
+      return next;
+    });
+  }
+
   if (loadingSession) {
     return (
       <CenteredShell>
@@ -414,34 +702,54 @@ export default function App() {
         <ScrollView contentContainerStyle={styles.authScroll}>
           <View style={styles.authHero}>
             <Text style={styles.eyebrow}>Field-Tech Pilot</Text>
-            <Text style={styles.heroTitle}>Mobile electrical-panel troubleshooting</Text>
+            <Text style={styles.heroTitle}>Capture a panel, not a token</Text>
             <Text style={styles.heroBody}>
-              Capture a photo or short clip on-site, then get likely issue candidates, next
-              inspection steps, similar cases, and whether to escalate.
+              Sign in with your invited email, capture a panel photo or short clip on-site,
+              and get likely issue candidates plus grounded next steps.
             </Text>
           </View>
           <View style={styles.card}>
-            <Text style={styles.sectionTitle}>Connect to pilot backend</Text>
+            <Text style={styles.sectionTitle}>Sign in with magic link</Text>
             <Field
-              label="API base URL"
-              value={apiBaseUrl}
-              onChangeText={setApiBaseUrl}
-              placeholder="http://localhost:8000"
+              label="Invited email"
+              value={authEmail}
+              onChangeText={setAuthEmail}
+              placeholder="tech@example.com"
               autoCapitalize="none"
-            />
-            <Field
-              label="Bearer token"
-              value={token}
-              onChangeText={setToken}
-              placeholder="Paste invited-user token"
-              autoCapitalize="none"
-              secureTextEntry
+              keyboardType="email-address"
             />
             <Text style={styles.metaText}>
-              No offline inference. Capture is stored locally until upload succeeds.
+              The pilot build is preconfigured for one backend environment. Magic links only.
             </Text>
-            <PrimaryButton title="Connect" loading={submitting} onPress={connect} />
+            {loginMessage ? <Text style={styles.metaText}>{loginMessage}</Text> : null}
+            <PrimaryButton title="Send magic link" loading={submitting} onPress={sendMagicLink} />
+            {!supabase ? (
+              <Text style={styles.captureWarningText}>
+                Supabase mobile auth is not configured for this build.
+              </Text>
+            ) : null}
           </View>
+
+          <Pressable onPress={onBuildLabelPress}>
+            <Text style={styles.buildLabel}>pilot build · tap 5x for developer override</Text>
+          </Pressable>
+
+          {debugVisible ? (
+            <View style={styles.card}>
+              <Text style={styles.sectionTitle}>Developer override</Text>
+              <Field
+                label="API base URL"
+                value={debugApiBaseUrl}
+                onChangeText={setDebugApiBaseUrl}
+                placeholder={DEFAULT_API_BASE_URL}
+                autoCapitalize="none"
+              />
+              <View style={styles.captureRow}>
+                <SecondaryAction title="Save override" onPress={() => void saveDebugBaseUrl()} />
+                <SecondaryAction title="Reset" onPress={() => void resetDebugBaseUrl()} />
+              </View>
+            </View>
+          ) : null}
         </ScrollView>
       </SafeAreaView>
     );
@@ -459,15 +767,8 @@ export default function App() {
               {identity.role} · {identity.organization_id ?? "service"}
             </Text>
           </View>
-          <Pressable
-            style={styles.secondaryButton}
-            onPress={async () => {
-              await AsyncStorage.removeItem(SESSION_KEY);
-              setIdentity(null);
-              setToken("");
-            }}
-          >
-            <Text style={styles.secondaryButtonText}>Switch token</Text>
+          <Pressable style={styles.secondaryButton} onPress={() => void signOut()}>
+            <Text style={styles.secondaryButtonText}>Sign out</Text>
           </Pressable>
         </View>
 
@@ -497,40 +798,122 @@ export default function App() {
         ) : null}
 
         <View style={styles.card}>
-          <Text style={styles.sectionTitle}>Case setup</Text>
+          <View style={styles.inlineHeader}>
+            <Text style={styles.sectionTitle}>Case setup</Text>
+            <Pressable onPress={() => void loadSites()}>
+              <Text style={styles.linkText}>Refresh catalog</Text>
+            </Pressable>
+          </View>
           <Text style={styles.metaText}>
-            Frame the whole panel, avoid glare, and keep indicator lights readable.
+            Capture the whole panel, keep indicator lights readable, and keep short clips under
+            12 seconds.
           </Text>
-          <Field label="Site" value={draft.siteId} onChangeText={(value) => setDraftValue("siteId", value)} />
-          <Field label="Asset" value={draft.assetId} onChangeText={(value) => setDraftValue("assetId", value)} />
+
           <Field
-            label="Panel family"
-            value={draft.panelFamily}
-            onChangeText={(value) => setDraftValue("panelFamily", value)}
+            label="Find site"
+            value={siteQuery}
+            onChangeText={setSiteQuery}
+            placeholder="Search site name or code"
           />
-          <Field label="Panel ID" value={draft.panelId} onChangeText={(value) => setDraftValue("panelId", value)} />
+          {loadingCatalog ? <Text style={styles.metaText}>Loading sites…</Text> : null}
+          <SelectionList
+            emptyMessage="No sites available yet in this organization."
+            items={filteredSites}
+            selectedId={draft.siteId}
+            label={(site) => `${site.name}${site.code ? ` · ${site.code}` : ""}`}
+            subtitle={(site) => site.site_id}
+            onSelect={(site) => {
+              setDraft((current) => ({
+                ...current,
+                siteId: site.site_id,
+                assetId: current.siteId === site.site_id ? current.assetId : "",
+              }));
+              setAssetQuery("");
+            }}
+          />
+
+          {selectedSite ? (
+            <>
+              <Field
+                label="Find asset"
+                value={assetQuery}
+                onChangeText={setAssetQuery}
+                placeholder="Search display name, panel family, or panel ID"
+              />
+              {recentAssets.length ? (
+                <View style={styles.recentStrip}>
+                  <Text style={styles.metaText}>Recent assets</Text>
+                  <View style={styles.chipRow}>
+                    {recentAssets.map((asset) => (
+                      <Pressable
+                        key={asset.asset_id}
+                        style={styles.chip}
+                        onPress={() =>
+                          setDraft((current) => ({
+                            ...current,
+                            assetId: asset.asset_id,
+                            siteId: asset.site_id,
+                          }))
+                        }
+                      >
+                        <Text style={styles.chipText}>{asset.display_name}</Text>
+                      </Pressable>
+                    ))}
+                  </View>
+                </View>
+              ) : null}
+              <SelectionList
+                emptyMessage="No assets found for this site yet."
+                items={assets}
+                selectedId={draft.assetId}
+                label={(asset) => asset.display_name}
+                subtitle={(asset) =>
+                  `${asset.asset_id} · ${asset.panel_family}${asset.panel_id ? ` · ${asset.panel_id}` : ""}`
+                }
+                onSelect={(asset) => {
+                  setDraft((current) => ({ ...current, assetId: asset.asset_id }));
+                  rememberRecentAsset(asset.asset_id);
+                }}
+              />
+            </>
+          ) : (
+            <Text style={styles.metaText}>Select a site before choosing an asset.</Text>
+          )}
+
+          {selectedAsset ? (
+            <View style={styles.previewCard}>
+              <Text style={styles.previewTitle}>{selectedAsset.display_name}</Text>
+              <Text style={styles.metaText}>
+                {selectedAsset.asset_id} · {selectedAsset.panel_family} ·{" "}
+                {selectedAsset.panel_id ?? "panel id not set"}
+              </Text>
+            </View>
+          ) : null}
+
           <Field
             label="What are you seeing?"
             value={draft.question}
-            onChangeText={(value) => setDraftValue("question", value)}
+            onChangeText={(value) => setDraftValue(setDraft, "question", value)}
             multiline
           />
           <Field
             label="Operator context"
             value={draft.operatorContext}
-            onChangeText={(value) => setDraftValue("operatorContext", value)}
+            onChangeText={(value) => setDraftValue(setDraft, "operatorContext", value)}
             multiline
           />
           <Field
             label="Expected state label"
             value={draft.expectedStateLabel}
-            onChangeText={(value) => setDraftValue("expectedStateLabel", value)}
+            onChangeText={(value) => setDraftValue(setDraft, "expectedStateLabel", value)}
             placeholder="optional"
           />
+
           <View style={styles.captureRow}>
             <SecondaryAction title="Capture photo" onPress={() => void capture("image")} />
             <SecondaryAction title="Capture short clip" onPress={() => void capture("video")} />
           </View>
+
           {draft.selectedMedia ? (
             <View style={styles.previewCard}>
               <Text style={styles.previewTitle}>
@@ -546,6 +929,7 @@ export default function App() {
               <Text style={styles.metaText}>{draft.selectedMedia.name}</Text>
             </View>
           ) : null}
+
           {captureHints.length > 0 ? (
             <View style={styles.captureWarning}>
               <Text style={styles.captureWarningTitle}>Retake guidance</Text>
@@ -556,6 +940,7 @@ export default function App() {
               ))}
             </View>
           ) : null}
+
           <PrimaryButton title="Analyze case" loading={submitting} onPress={() => void analyzeCase()} />
           {syncMessage ? <Text style={styles.metaText}>{syncMessage}</Text> : null}
         </View>
@@ -618,9 +1003,9 @@ export default function App() {
               ))}
             </CardSection>
 
-            <CardSection title="Panel-state assessment">
+            <CardSection title="State assessment">
               <Text style={styles.resultPrimary}>
-                {selectedCase.analysis.state_assessment.matched_state_label ?? "No close reference state"}
+                {selectedCase.analysis.state_assessment.matched_state_label ?? "No state match"}
               </Text>
               <Text style={styles.resultSecondary}>
                 {selectedCase.analysis.state_assessment.summary}
@@ -632,13 +1017,14 @@ export default function App() {
                 <View key={step.step} style={styles.resultRow}>
                   <Text style={styles.resultPrimary}>{step.step}</Text>
                   <Text style={styles.resultSecondary}>
-                    {Math.round(step.confidence * 100)}% · {step.citations[0]?.title ?? "No citation"}
+                    {step.citations[0]?.title ?? "No citation"} ·{" "}
+                    {Math.round(step.confidence * 100)}%
                   </Text>
                 </View>
               ))}
             </CardSection>
 
-            <CardSection title="Similar prior cases">
+            <CardSection title="Similar cases">
               {selectedCase.analysis.similar_incidents.map((incident) => (
                 <View key={incident.title} style={styles.resultRow}>
                   <Text style={styles.resultPrimary}>{incident.title}</Text>
@@ -649,7 +1035,7 @@ export default function App() {
               ))}
             </CardSection>
 
-            <CardSection title="Escalation guidance">
+            <CardSection title="Escalation">
               <Text style={styles.resultPrimary}>
                 {selectedCase.analysis.escalation_recommendation.replaceAll("_", " ")}
               </Text>
@@ -663,20 +1049,68 @@ export default function App() {
               ))}
             </CardSection>
 
-            <View style={styles.feedbackRow}>
-              <SecondaryAction title="Helpful" onPress={() => void submitFeedback(["helpful"])} />
-              <SecondaryAction title="Not helpful" onPress={() => void submitFeedback(["not_helpful"])} />
-              <SecondaryAction title="Escalated anyway" onPress={() => void submitFeedback(["escalated_anyway"], "Escalated despite the guided result.")} />
+            <View style={styles.captureRow}>
+              <SecondaryAction
+                title="Helpful"
+                onPress={() =>
+                  void submitFeedback(["helpful"], "This result shortened the inspection loop.")
+                }
+              />
+              <SecondaryAction
+                title="Escalated anyway"
+                onPress={() =>
+                  void submitFeedback(
+                    ["escalated_anyway"],
+                    "Escalated because visible evidence was not enough.",
+                  )
+                }
+              />
             </View>
           </View>
         ) : null}
       </ScrollView>
     </SafeAreaView>
   );
+}
 
-  function setDraftValue<Key extends keyof DraftCase>(key: Key, value: DraftCase[Key]) {
-    setDraft((current) => ({ ...current, [key]: value }));
+function CardSection(props: { title: string; children: ReactNode }) {
+  return (
+    <View style={styles.card}>
+      <Text style={styles.sectionTitle}>{props.title}</Text>
+      {props.children}
+    </View>
+  );
+}
+
+function SelectionList<T extends { site_id?: string; asset_id?: string }>(props: {
+  items: T[];
+  selectedId: string;
+  emptyMessage: string;
+  label: (item: T) => string;
+  subtitle: (item: T) => string;
+  onSelect: (item: T) => void;
+}) {
+  if (props.items.length === 0) {
+    return <Text style={styles.metaText}>{props.emptyMessage}</Text>;
   }
+  return (
+    <View style={styles.selectionList}>
+      {props.items.map((item) => {
+        const id = ("site_id" in item ? item.site_id : item.asset_id) ?? "";
+        const selected = props.selectedId === id;
+        return (
+          <Pressable
+            key={id}
+            style={[styles.selectionRow, selected ? styles.selectionRowActive : null]}
+            onPress={() => props.onSelect(item)}
+          >
+            <Text style={styles.selectionTitle}>{props.label(item)}</Text>
+            <Text style={styles.metaText}>{props.subtitle(item)}</Text>
+          </Pressable>
+        );
+      })}
+    </View>
+  );
 }
 
 function Field(props: {
@@ -687,32 +1121,47 @@ function Field(props: {
   multiline?: boolean;
   autoCapitalize?: "none" | "sentences" | "words" | "characters";
   secureTextEntry?: boolean;
+  keyboardType?:
+    | "default"
+    | "email-address"
+    | "numeric"
+    | "phone-pad"
+    | "url";
 }) {
   return (
     <View style={styles.field}>
-      <Text style={styles.label}>{props.label}</Text>
+      <Text style={styles.fieldLabel}>{props.label}</Text>
       <TextInput
         value={props.value}
         onChangeText={props.onChangeText}
         placeholder={props.placeholder}
-        placeholderTextColor="#7C8E96"
+        placeholderTextColor="#6E7C81"
+        style={[styles.input, props.multiline ? styles.textArea : null]}
         multiline={props.multiline}
-        autoCapitalize={props.autoCapitalize ?? "sentences"}
+        autoCapitalize={props.autoCapitalize}
         secureTextEntry={props.secureTextEntry}
-        style={[styles.input, props.multiline ? styles.multilineInput : null]}
+        keyboardType={props.keyboardType}
       />
     </View>
   );
 }
 
-function PrimaryButton(props: { title: string; loading?: boolean; onPress: () => void }) {
+function PrimaryButton(props: {
+  title: string;
+  onPress: () => void;
+  loading?: boolean;
+}) {
   return (
     <Pressable
+      style={[styles.primaryButton, props.loading ? styles.disabledButton : null]}
       onPress={props.onPress}
       disabled={props.loading}
-      style={[styles.primaryButton, props.loading ? styles.buttonDisabled : null]}
     >
-      {props.loading ? <ActivityIndicator color="#081116" /> : <Text style={styles.primaryButtonText}>{props.title}</Text>}
+      {props.loading ? (
+        <ActivityIndicator color="#fff9f0" />
+      ) : (
+        <Text style={styles.primaryButtonText}>{props.title}</Text>
+      )}
     </Pressable>
   );
 }
@@ -725,22 +1174,18 @@ function SecondaryAction(props: { title: string; onPress: () => void }) {
   );
 }
 
-function CardSection(props: { title: string; children: ReactNode }) {
+function CenteredShell(props: { children: ReactNode }) {
   return (
-    <View style={styles.resultCard}>
-      <Text style={styles.cardTitle}>{props.title}</Text>
-      {props.children}
-    </View>
+    <SafeAreaView style={styles.safeArea}>
+      <StatusBar style="light" />
+      <View style={styles.centeredShell}>{props.children}</View>
+    </SafeAreaView>
   );
 }
 
-function CenteredShell(props: { children: ReactNode }) {
-  return <SafeAreaView style={styles.centeredShell}>{props.children}</SafeAreaView>;
-}
-
-function authHeaders(token: string) {
+function authHeaders(accessToken: string) {
   return {
-    Authorization: `Bearer ${token}`,
+    Authorization: `Bearer ${accessToken}`,
     "Content-Type": "application/json",
   };
 }
@@ -755,254 +1200,321 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   return payload as T;
 }
 
-function errorMessage(error: unknown): string {
-  if (typeof error === "object" && error !== null && "detail" in error) {
-    const detail = (error as { detail: unknown }).detail;
-    if (typeof detail === "string") {
-      return detail;
-    }
-    if (typeof detail === "object" && detail !== null && "message" in detail) {
-      return String((detail as { message: unknown }).message);
-    }
-  }
-  return "The request did not complete. Retry when the connection is stable.";
-}
-
-function structuredError(error: unknown): { hints?: string[] } {
-  if (typeof error === "object" && error !== null && "detail" in error) {
-    const detail = (error as { detail: unknown }).detail;
-    if (typeof detail === "object" && detail !== null && "hints" in detail) {
-      return {
-        hints: Array.isArray((detail as { hints: unknown }).hints)
-          ? ((detail as { hints: string[] }).hints)
-          : [],
-      };
-    }
-  }
-  return {};
-}
-
 function emptyToNull(value: string): string | null {
   const trimmed = value.trim();
   return trimmed ? trimmed : null;
 }
 
+function structuredError(error: unknown): { message: string; hints?: string[] } {
+  if (typeof error === "object" && error !== null && "detail" in error) {
+    const detail = (error as { detail: unknown }).detail;
+    if (typeof detail === "object" && detail !== null) {
+      const message =
+        "message" in detail && typeof detail.message === "string"
+          ? detail.message
+          : "The request could not be completed.";
+      const hints =
+        "hints" in detail && Array.isArray(detail.hints)
+          ? detail.hints.filter((item): item is string => typeof item === "string")
+          : undefined;
+      return { message, hints };
+    }
+    if (typeof detail === "string") {
+      return { message: detail };
+    }
+  }
+  return { message: "The request could not be completed." };
+}
+
+function errorMessage(error: unknown): string {
+  return structuredError(error).message;
+}
+
+function extractUrlParams(url: string): URLSearchParams {
+  const [beforeHash, hash = ""] = url.split("#", 2);
+  const query = beforeHash.includes("?") ? beforeHash.split("?")[1] ?? "" : "";
+  const params = new URLSearchParams(query);
+  const hashParams = new URLSearchParams(hash);
+  hashParams.forEach((value, key) => {
+    params.set(key, value);
+  });
+  return params;
+}
+
+function setDraftValue(
+  setDraft: Dispatch<SetStateAction<DraftCase>>,
+  key: "siteId" | "assetId" | "question" | "operatorContext" | "expectedStateLabel",
+  value: string,
+) {
+  setDraft((current) => ({ ...current, [key]: value }));
+}
+
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: "#0B151B",
-  },
-  authScroll: {
-    padding: 24,
-    gap: 18,
-    backgroundColor: "#0B151B",
-  },
-  appScroll: {
-    padding: 18,
-    gap: 16,
-    backgroundColor: "#0B151B",
+    backgroundColor: "#0E181D",
   },
   centeredShell: {
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#0B151B",
     gap: 12,
+    paddingHorizontal: 24,
+  },
+  loadingText: {
+    color: "#E9E1D0",
+    fontSize: 16,
+  },
+  authScroll: {
+    padding: 20,
+    gap: 18,
+  },
+  appScroll: {
+    padding: 18,
+    gap: 16,
   },
   authHero: {
-    padding: 24,
-    borderRadius: 24,
-    backgroundColor: "#13232C",
-    gap: 12,
+    paddingVertical: 12,
+    gap: 10,
   },
   eyebrow: {
     color: "#F08C2E",
-    textTransform: "uppercase",
-    letterSpacing: 1.5,
     fontSize: 12,
-    fontWeight: "700",
+    fontWeight: "800",
+    letterSpacing: 2,
+    textTransform: "uppercase",
   },
   heroTitle: {
-    color: "#F5F2E9",
+    color: "#FFF5E5",
     fontSize: 34,
-    lineHeight: 38,
-    fontWeight: "800",
+    fontWeight: "700",
+    lineHeight: 36,
   },
   heroBody: {
-    color: "#C1CDD2",
-    fontSize: 15,
-    lineHeight: 22,
+    color: "#C8D1D5",
+    fontSize: 16,
+    lineHeight: 24,
   },
   header: {
     flexDirection: "row",
+    alignItems: "flex-start",
     justifyContent: "space-between",
-    alignItems: "center",
+    gap: 12,
   },
   headerTitle: {
-    color: "#F5F2E9",
+    color: "#FFF5E5",
     fontSize: 28,
-    fontWeight: "800",
-  },
-  card: {
-    backgroundColor: "#12222A",
-    borderRadius: 22,
-    padding: 18,
-    gap: 12,
-    borderWidth: 1,
-    borderColor: "#1D343F",
-  },
-  banner: {
-    backgroundColor: "#1D2B12",
-    borderRadius: 18,
-    padding: 16,
-    gap: 8,
-    borderWidth: 1,
-    borderColor: "#4F7433",
-  },
-  bannerTitle: {
-    color: "#D9F59D",
-    fontSize: 16,
     fontWeight: "700",
   },
+  card: {
+    borderRadius: 22,
+    backgroundColor: "#142229",
+    padding: 16,
+    gap: 12,
+    borderWidth: 1,
+    borderColor: "#23363D",
+  },
+  banner: {
+    borderRadius: 18,
+    backgroundColor: "#1B2C34",
+    padding: 14,
+    gap: 6,
+    borderWidth: 1,
+    borderColor: "#2E4650",
+  },
+  bannerTitle: {
+    color: "#F4B15C",
+    fontSize: 14,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 1.2,
+  },
   bannerBody: {
-    color: "#E9F4D5",
+    color: "#D6DEE1",
+    fontSize: 14,
     lineHeight: 20,
   },
   pendingBanner: {
-    backgroundColor: "#3A2715",
-    padding: 14,
-    borderRadius: 16,
+    borderRadius: 18,
+    backgroundColor: "#332416",
     borderWidth: 1,
-    borderColor: "#D6842D",
+    borderColor: "#6B4725",
+    padding: 14,
+    gap: 10,
   },
   pendingText: {
-    color: "#F8D4A2",
+    color: "#FFD7A8",
+    fontSize: 14,
     lineHeight: 20,
   },
   pendingActions: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 10,
-    marginTop: 10,
-  },
-  sectionTitle: {
-    color: "#F5F2E9",
-    fontSize: 21,
-    fontWeight: "800",
-  },
-  metaText: {
-    color: "#A8B6BC",
-    lineHeight: 19,
   },
   field: {
     gap: 6,
   },
-  label: {
-    color: "#D9E2E6",
+  fieldLabel: {
+    color: "#E5E9EA",
     fontSize: 13,
     fontWeight: "700",
   },
   input: {
-    backgroundColor: "#081116",
-    borderRadius: 14,
+    borderRadius: 16,
+    backgroundColor: "#0D1519",
+    borderWidth: 1,
+    borderColor: "#2C3D43",
     paddingHorizontal: 14,
     paddingVertical: 12,
-    color: "#F5F2E9",
-    borderWidth: 1,
-    borderColor: "#1E353F",
+    color: "#FFF5E5",
+    fontSize: 15,
   },
-  multilineInput: {
-    minHeight: 88,
+  textArea: {
+    minHeight: 92,
     textAlignVertical: "top",
   },
-  primaryButton: {
-    backgroundColor: "#F08C2E",
-    paddingVertical: 14,
-    borderRadius: 16,
+  metaText: {
+    color: "#AEBBC0",
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  sectionTitle: {
+    color: "#FFF5E5",
+    fontSize: 18,
+    fontWeight: "700",
+  },
+  inlineHeader: {
+    flexDirection: "row",
     alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+  },
+  primaryButton: {
+    borderRadius: 16,
+    backgroundColor: "#D6761E",
+    paddingVertical: 14,
+    alignItems: "center",
+    justifyContent: "center",
   },
   primaryButtonText: {
-    color: "#081116",
-    fontSize: 16,
-    fontWeight: "800",
+    color: "#FFF8F0",
+    fontSize: 15,
+    fontWeight: "700",
   },
   secondaryButton: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 14,
-    backgroundColor: "#12222A",
+    borderRadius: 16,
     borderWidth: 1,
-    borderColor: "#1E353F",
+    borderColor: "#3B4C53",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
   },
   secondaryButtonText: {
-    color: "#D9E2E6",
+    color: "#D6DEE1",
     fontWeight: "700",
   },
   secondaryAction: {
-    flex: 1,
-    minWidth: 0,
-    backgroundColor: "#081116",
-    paddingVertical: 12,
-    paddingHorizontal: 10,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: "#314853",
-    alignItems: "center",
+    borderColor: "#38515A",
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: "#112027",
   },
   secondaryActionText: {
-    color: "#E7EEF1",
+    color: "#DCE5E8",
     fontWeight: "700",
-    textAlign: "center",
+  },
+  disabledButton: {
+    opacity: 0.7,
   },
   captureRow: {
     flexDirection: "row",
+    flexWrap: "wrap",
     gap: 10,
   },
   previewCard: {
-    backgroundColor: "#081116",
     borderRadius: 16,
+    backgroundColor: "#0D1519",
+    borderWidth: 1,
+    borderColor: "#2B3E46",
     padding: 12,
-    gap: 10,
+    gap: 8,
   },
   previewTitle: {
-    color: "#F5F2E9",
+    color: "#F8F0E0",
+    fontSize: 15,
     fontWeight: "700",
   },
   previewImage: {
     width: "100%",
-    aspectRatio: 1.2,
+    height: 180,
     borderRadius: 14,
+    backgroundColor: "#243238",
   },
   videoPlaceholder: {
+    height: 120,
     borderRadius: 14,
-    minHeight: 160,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "#15242D",
+    backgroundColor: "#1A2A30",
   },
   videoPlaceholderText: {
-    color: "#C1CDD2",
+    color: "#D7E1E4",
     fontWeight: "700",
   },
   captureWarning: {
-    backgroundColor: "#3E1C16",
     borderRadius: 16,
-    padding: 14,
-    gap: 4,
+    padding: 12,
     borderWidth: 1,
-    borderColor: "#A84D3A",
+    borderColor: "#7B5230",
+    backgroundColor: "#342516",
+    gap: 6,
   },
   captureWarningTitle: {
-    color: "#F9C4B7",
+    color: "#FFD7A8",
     fontWeight: "700",
   },
   captureWarningText: {
-    color: "#FCE0D9",
-    lineHeight: 19,
+    color: "#F6D1AC",
+    lineHeight: 18,
   },
-  inlineHeader: {
+  selectionList: {
+    gap: 8,
+  },
+  selectionRow: {
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: "#27383F",
+    backgroundColor: "#101A1F",
+    padding: 12,
+    gap: 4,
+  },
+  selectionRowActive: {
+    borderColor: "#D6761E",
+    backgroundColor: "#1F241F",
+  },
+  selectionTitle: {
+    color: "#FFF5E5",
+    fontWeight: "700",
+  },
+  recentStrip: {
+    gap: 8,
+  },
+  chipRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  chip: {
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    backgroundColor: "#24363C",
+  },
+  chipText: {
+    color: "#E4ECEE",
+    fontWeight: "600",
   },
   linkText: {
     color: "#F08C2E",
@@ -1010,68 +1522,54 @@ const styles = StyleSheet.create({
   },
   caseRow: {
     flexDirection: "row",
-    alignItems: "center",
     gap: 12,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: "#1A2E38",
+    alignItems: "center",
+    borderRadius: 16,
+    backgroundColor: "#0F181D",
+    borderWidth: 1,
+    borderColor: "#23363D",
+    padding: 12,
+    marginBottom: 10,
   },
   caseTitle: {
-    color: "#F5F2E9",
+    color: "#FFF5E5",
     fontWeight: "700",
   },
   caseBadge: {
-    color: "#F08C2E",
+    color: "#F3BF7E",
     fontSize: 12,
-    fontWeight: "800",
     textTransform: "uppercase",
-    maxWidth: 120,
-    textAlign: "right",
   },
   resultShell: {
     gap: 12,
   },
   resultHeader: {
     flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
+    justifyContent: "space-between",
   },
   resultStatus: {
-    color: "#F08C2E",
-    fontWeight: "800",
+    color: "#F3BF7E",
+    fontWeight: "700",
     textTransform: "uppercase",
-  },
-  resultCard: {
-    backgroundColor: "#12222A",
-    borderRadius: 18,
-    padding: 16,
-    gap: 10,
-  },
-  cardTitle: {
-    color: "#F5F2E9",
-    fontWeight: "800",
-    fontSize: 16,
   },
   resultRow: {
     gap: 4,
+    marginBottom: 8,
   },
   resultPrimary: {
-    color: "#F5F2E9",
+    color: "#F8F0E0",
+    fontSize: 15,
     fontWeight: "700",
-    lineHeight: 21,
-  },
-  resultSecondary: {
-    color: "#B7C5CB",
     lineHeight: 20,
   },
-  feedbackRow: {
-    flexDirection: "row",
-    gap: 10,
+  resultSecondary: {
+    color: "#C4D0D4",
+    lineHeight: 19,
   },
-  loadingText: {
-    color: "#C1CDD2",
-  },
-  buttonDisabled: {
-    opacity: 0.7,
+  buildLabel: {
+    color: "#73858C",
+    fontSize: 12,
+    textAlign: "center",
   },
 });

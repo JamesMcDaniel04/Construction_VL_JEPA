@@ -274,8 +274,7 @@ class PilotUser(BaseModel):
     organization_id: str
     role: UserRole
     display_name: str
-    email: str | None = None
-    token_sha256: str
+    email: str
     invited_by_user_id: str | None = None
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     active: bool = True
@@ -285,11 +284,10 @@ class PilotUserSeed(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     user_id: str
-    token: str
     organization_id: str
     role: UserRole
     display_name: str
-    email: str | None = None
+    email: str
 
 
 class PilotUserInviteRequest(BaseModel):
@@ -298,7 +296,7 @@ class PilotUserInviteRequest(BaseModel):
     organization_id: str
     role: UserRole
     display_name: str
-    email: str | None = None
+    email: str
 
 
 class PilotUserView(BaseModel):
@@ -308,7 +306,7 @@ class PilotUserView(BaseModel):
     organization_id: str
     role: UserRole
     display_name: str
-    email: str | None = None
+    email: str
     invited_by_user_id: str | None = None
     created_at: datetime
     active: bool = True
@@ -318,7 +316,78 @@ class PilotUserInviteResponse(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     user: PilotUserView
-    bearer_token: str
+    invite_status: str
+
+
+class SiteRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    site_id: str
+    organization_id: str
+    name: str
+    code: str | None = None
+    active: bool = True
+    metadata: dict[str, str | int | float | bool] = Field(default_factory=dict)
+
+
+class SiteCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    site_id: str
+    name: str
+    code: str | None = None
+    organization_id: str | None = None
+    active: bool = True
+    metadata: dict[str, str | int | float | bool] = Field(default_factory=dict)
+
+
+class SitePatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = None
+    code: str | None = None
+    active: bool | None = None
+    metadata: dict[str, str | int | float | bool] | None = None
+
+
+class AssetRecord(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str
+    organization_id: str
+    site_id: str
+    display_name: str
+    panel_family: str
+    equipment_family: str = "electrical_panel_family_a"
+    panel_id: str | None = None
+    active: bool = True
+    metadata: dict[str, str | int | float | bool] = Field(default_factory=dict)
+
+
+class AssetCreateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    asset_id: str
+    site_id: str
+    display_name: str
+    panel_family: str
+    equipment_family: str = "electrical_panel_family_a"
+    panel_id: str | None = None
+    organization_id: str | None = None
+    active: bool = True
+    metadata: dict[str, str | int | float | bool] = Field(default_factory=dict)
+
+
+class AssetPatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    site_id: str | None = None
+    display_name: str | None = None
+    panel_family: str | None = None
+    equipment_family: str | None = None
+    panel_id: str | None = None
+    active: bool | None = None
+    metadata: dict[str, str | int | float | bool] | None = None
 
 
 class TriageCaseCreateRequest(BaseModel):
@@ -326,9 +395,6 @@ class TriageCaseCreateRequest(BaseModel):
 
     site_id: str
     asset_id: str
-    panel_family: str
-    equipment_family: str = "electrical_panel_family_a"
-    panel_id: str | None = None
     question: str | None = None
     operator_context: str | None = None
     expected_state_label: str | None = None

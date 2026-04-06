@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import re
-import secrets
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -12,10 +11,13 @@ from uuid import uuid4
 import numpy as np
 import torch
 
-from maintenance_triage_copilot.api.security import bearer_token_sha256
+from maintenance_triage_copilot.auth.supabase import SupabaseAuthProvider
 from maintenance_triage_copilot.config import AppConfig
 from maintenance_triage_copilot.domain.models import (
     AdminDashboardMetrics,
+    AssetCreateRequest,
+    AssetPatchRequest,
+    AssetRecord,
     AssetType,
     Citation,
     CorpusDocument,
@@ -34,6 +36,9 @@ from maintenance_triage_copilot.domain.models import (
     PilotUserView,
     ReferenceState,
     SimilarIncident,
+    SiteCreateRequest,
+    SitePatchRequest,
+    SiteRecord,
     StateAssessment,
     TriageAuditDetail,
     TriageAuditRecord,
@@ -119,6 +124,7 @@ class AppState:
     metadata_store: MetadataStore
     object_store: ObjectStore
     asset_status: dict[str, dict[str, str | bool]]
+    supabase_auth: SupabaseAuthProvider | None = None
     auth_mode: str = "none"
     telemetry_mode: str = "disabled"
     projector_checkpoint_path: str | None = None
@@ -176,13 +182,15 @@ class TriageService:
         existing = self.state.metadata_store.get_pilot_user(seed.user_id)
         if existing is not None:
             return existing
+        existing_by_email = self.state.metadata_store.get_pilot_user_by_email(seed.email)
+        if existing_by_email is not None:
+            return existing_by_email
         pilot_user = PilotUser(
             user_id=seed.user_id,
             organization_id=seed.organization_id,
             role=seed.role,
             display_name=seed.display_name,
-            email=seed.email,
-            token_sha256=bearer_token_sha256(seed.token),
+            email=seed.email.strip().lower(),
         )
         self.state.metadata_store.add_pilot_user(pilot_user)
         return pilot_user
@@ -193,24 +201,177 @@ class TriageService:
         *,
         invited_by_user_id: str,
     ) -> PilotUserInviteResponse:
-        bearer_token = f"mtc-user-{secrets.token_urlsafe(24)}"
+        auth = self.state.supabase_auth
+        if auth is None or not auth.configured_for_invites():
+            raise RuntimeError("Supabase invite flow is not configured")
+        invite_result = auth.invite_user(
+            email=request.email.strip().lower(),
+            display_name=request.display_name,
+            redirect_to=self.state.config.supabase.web_redirect_url,
+        )
         pilot_user = PilotUser(
-            user_id=f"user-{uuid4().hex[:16]}",
+            user_id=invite_result.user_id,
             organization_id=request.organization_id,
             role=request.role,
             display_name=request.display_name,
-            email=request.email,
-            token_sha256=bearer_token_sha256(bearer_token),
+            email=invite_result.email,
             invited_by_user_id=invited_by_user_id,
         )
         self.state.metadata_store.add_pilot_user(pilot_user)
         return PilotUserInviteResponse(
             user=self.pilot_user_view(pilot_user),
-            bearer_token=bearer_token,
+            invite_status=invite_result.invite_status,
         )
 
     def list_pilot_users(self, *, limit: int, offset: int) -> list[PilotUser]:
         return self.state.metadata_store.list_pilot_users(limit, offset)
+
+    def add_site(
+        self,
+        request: SiteCreateRequest,
+        *,
+        organization_id: str,
+    ) -> SiteRecord:
+        site = SiteRecord(
+            site_id=request.site_id,
+            organization_id=organization_id,
+            name=request.name,
+            code=request.code,
+            active=request.active,
+            metadata=request.metadata,
+        )
+        self.state.metadata_store.add_site(site)
+        return site
+
+    def update_site(
+        self,
+        site_id: str,
+        patch: SitePatchRequest,
+        *,
+        organization_id: str | None,
+        role: UserRole,
+    ) -> SiteRecord | None:
+        site = self.state.metadata_store.get_site(site_id)
+        if site is None:
+            return None
+        if role != UserRole.service and site.organization_id != organization_id:
+            raise PermissionError("Not allowed to update this site")
+        updated = site.model_copy(
+            update={
+                "name": patch.name if patch.name is not None else site.name,
+                "code": patch.code if patch.code is not None else site.code,
+                "active": patch.active if patch.active is not None else site.active,
+                "metadata": patch.metadata if patch.metadata is not None else site.metadata,
+            }
+        )
+        self.state.metadata_store.add_site(updated)
+        return updated
+
+    def list_sites(
+        self,
+        *,
+        limit: int,
+        offset: int,
+        organization_id: str | None,
+        role: UserRole,
+        query: str | None = None,
+        active_only: bool = False,
+    ) -> list[SiteRecord]:
+        scoped_organization_id = None if role == UserRole.service else organization_id
+        return self.state.metadata_store.list_sites(
+            limit,
+            offset,
+            organization_id=scoped_organization_id,
+            query=query,
+            active_only=active_only,
+        )
+
+    def add_asset_catalog_record(
+        self,
+        request: AssetCreateRequest,
+        *,
+        organization_id: str,
+    ) -> AssetRecord:
+        site = self.state.metadata_store.get_site(request.site_id)
+        if site is None:
+            raise LookupError("Site not found")
+        if site.organization_id != organization_id:
+            raise PermissionError("Site does not belong to this organization")
+        asset = AssetRecord(
+            asset_id=request.asset_id,
+            organization_id=organization_id,
+            site_id=request.site_id,
+            display_name=request.display_name,
+            panel_family=request.panel_family,
+            equipment_family=request.equipment_family,
+            panel_id=request.panel_id,
+            active=request.active,
+            metadata=request.metadata,
+        )
+        self.state.metadata_store.add_asset_catalog_record(asset)
+        return asset
+
+    def update_asset_catalog_record(
+        self,
+        asset_id: str,
+        patch: AssetPatchRequest,
+        *,
+        organization_id: str | None,
+        role: UserRole,
+    ) -> AssetRecord | None:
+        asset = self.state.metadata_store.get_asset_catalog_record(asset_id)
+        if asset is None:
+            return None
+        if role != UserRole.service and asset.organization_id != organization_id:
+            raise PermissionError("Not allowed to update this asset")
+        next_site_id = patch.site_id if patch.site_id is not None else asset.site_id
+        site = self.state.metadata_store.get_site(next_site_id)
+        if site is None:
+            raise LookupError("Site not found")
+        if site.organization_id != asset.organization_id:
+            raise PermissionError("Asset site must remain within the same organization")
+        updated = asset.model_copy(
+            update={
+                "site_id": next_site_id,
+                "display_name": (
+                    patch.display_name if patch.display_name is not None else asset.display_name
+                ),
+                "panel_family": (
+                    patch.panel_family if patch.panel_family is not None else asset.panel_family
+                ),
+                "equipment_family": (
+                    patch.equipment_family
+                    if patch.equipment_family is not None
+                    else asset.equipment_family
+                ),
+                "panel_id": patch.panel_id if patch.panel_id is not None else asset.panel_id,
+                "active": patch.active if patch.active is not None else asset.active,
+                "metadata": patch.metadata if patch.metadata is not None else asset.metadata,
+            }
+        )
+        self.state.metadata_store.add_asset_catalog_record(updated)
+        return updated
+
+    def list_asset_catalog_records(
+        self,
+        *,
+        limit: int,
+        offset: int,
+        organization_id: str | None,
+        role: UserRole,
+        site_id: str | None = None,
+        query: str | None = None,
+        active_only: bool = False,
+    ) -> list[AssetRecord]:
+        scoped_organization_id = None if role == UserRole.service else organization_id
+        return self.state.metadata_store.list_asset_catalog_records(
+            limit,
+            offset,
+            organization_id=scoped_organization_id,
+            site_id=site_id,
+            query=query,
+            active_only=active_only,
+        )
 
     @staticmethod
     def pilot_user_view(pilot_user: PilotUser) -> PilotUserView:
@@ -292,17 +453,29 @@ class TriageService:
         display_name: str,
         role: UserRole,
     ) -> TriageCase:
+        site = self.state.metadata_store.get_site(request.site_id)
+        if site is None:
+            raise LookupError("Site not found")
+        asset = self.state.metadata_store.get_asset_catalog_record(request.asset_id)
+        if asset is None:
+            raise LookupError("Asset not found")
+        if asset.site_id != site.site_id:
+            raise ValueError("Asset does not belong to the selected site")
+        if asset.organization_id != site.organization_id:
+            raise ValueError("Asset and site organization mismatch")
+        if role != UserRole.service and asset.organization_id != organization_id:
+            raise PermissionError("Asset does not belong to the current organization")
         triage_case = TriageCase(
             case_id=f"case-{uuid4().hex[:16]}",
-            organization_id=organization_id,
+            organization_id=asset.organization_id,
             created_by_user_id=user_id,
             created_by_display_name=display_name,
             role=role,
             site_id=request.site_id,
             asset_id=request.asset_id,
-            panel_family=request.panel_family,
-            equipment_family=request.equipment_family,
-            panel_id=request.panel_id,
+            panel_family=asset.panel_family,
+            equipment_family=asset.equipment_family,
+            panel_id=asset.panel_id,
             question=request.question,
             operator_context=request.operator_context,
             expected_state_label=request.expected_state_label,

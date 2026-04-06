@@ -200,7 +200,7 @@ def test_docker_compose_smoke(tmp_path) -> None:
         assert health["components"]["vector_index"]["mode"] == "qdrant+memory"
         assert health["components"]["object_store"]["object_store"] == "s3"
         assert health["components"]["manifest"]["validated"] is True
-        assert health["components"]["auth"]["mode"] == "bearer"
+        assert health["components"]["auth"]["mode"] == "service_bearer"
 
         metrics_response = httpx.get(
             f"{base_url}/metrics",

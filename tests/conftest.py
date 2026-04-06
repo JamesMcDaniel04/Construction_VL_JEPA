@@ -8,6 +8,7 @@ import torch
 from fastapi.testclient import TestClient
 
 from maintenance_triage_copilot.api.main import create_app
+from maintenance_triage_copilot.auth.supabase import SupabaseIdentity, SupabaseInviteResult
 from maintenance_triage_copilot.config import (
     AdapterConfig,
     AppConfig,
@@ -17,9 +18,14 @@ from maintenance_triage_copilot.config import (
     RetrievalConfig,
     RuntimeConfig,
     SecurityConfig,
+    SupabaseConfig,
     TextEncoderConfig,
     TriageConfig,
     VideoBackboneConfig,
+)
+from maintenance_triage_copilot.domain.models import (
+    AssetCreateRequest,
+    SiteCreateRequest,
 )
 from maintenance_triage_copilot.encoding.text import MaintenanceTextEncoder
 from maintenance_triage_copilot.models.adapter import VisualTextProjector
@@ -129,6 +135,86 @@ def _prepare_model_assets(model_dir) -> None:
     (model_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True))
 
 
+class FakeSupabaseAuthProvider:
+    def __init__(self) -> None:
+        self._claims_by_token = {
+            "supabase-tech-token": SupabaseIdentity(
+                user_id="supabase-tech-1",
+                email="alex@example.com",
+                claims={"sub": "supabase-tech-1", "email": "alex@example.com"},
+            ),
+            "supabase-admin-token": SupabaseIdentity(
+                user_id="supabase-admin-1",
+                email="sam@example.com",
+                claims={"sub": "supabase-admin-1", "email": "sam@example.com"},
+            ),
+        }
+
+    def configured_for_human_auth(self) -> bool:
+        return True
+
+    def configured_for_invites(self) -> bool:
+        return True
+
+    def verify_access_token(self, token: str) -> SupabaseIdentity:
+        if token not in self._claims_by_token:
+            raise ValueError("invalid token")
+        return self._claims_by_token[token]
+
+    def invite_user(
+        self,
+        *,
+        email: str,
+        display_name: str,
+        redirect_to: str | None = None,
+    ) -> SupabaseInviteResult:
+        normalized_email = email.strip().lower()
+        local_part = normalized_email.split("@", 1)[0].replace(".", "-")
+        return SupabaseInviteResult(
+            user_id=f"supabase-{local_part}",
+            email=normalized_email,
+            invite_status="sent",
+        )
+
+
+def _seed_catalog(service: TriageService) -> None:
+    sites = [
+        SiteCreateRequest(site_id="site-a", name="Line A", code="A1"),
+        SiteCreateRequest(site_id="site-b", name="Line B", code="B1"),
+    ]
+    assets = [
+        AssetCreateRequest(
+            asset_id="panel-42",
+            site_id="site-a",
+            display_name="Main breaker panel 42",
+            panel_family="family-a",
+            equipment_family="electrical_panel_family_a",
+            panel_id="panel-42a",
+        ),
+        AssetCreateRequest(
+            asset_id="panel-77",
+            site_id="site-b",
+            display_name="Secondary panel 77",
+            panel_family="family-a",
+            equipment_family="electrical_panel_family_a",
+            panel_id="panel-77",
+        ),
+    ]
+    for site in sites:
+        service.add_site(site, organization_id="org-1")
+    for asset in assets:
+        service.add_asset_catalog_record(asset, organization_id="org-1")
+
+
+def _wire_test_auth(app) -> None:
+    fake_auth = FakeSupabaseAuthProvider()
+    app.state.supabase_auth = fake_auth
+    app.state.service.state.supabase_auth = fake_auth
+    app.state.human_token_verifier = fake_auth.verify_access_token
+    app.state.service.state.auth_mode = "hybrid_bearer"
+    _seed_catalog(app.state.service)
+
+
 @pytest.fixture
 def small_config(tmp_path) -> AppConfig:
     model_dir = tmp_path / "models"
@@ -162,22 +248,29 @@ def small_config(tmp_path) -> AppConfig:
             service_tokens={"test-client": "secret-token"},
             pilot_users=[
                 {
-                    "user_id": "tech-1",
-                    "token": "technician-token",
+                    "user_id": "supabase-tech-1",
                     "organization_id": "org-1",
                     "role": "technician",
                     "display_name": "Alex Technician",
                     "email": "alex@example.com",
                 },
                 {
-                    "user_id": "admin-1",
-                    "token": "admin-token",
+                    "user_id": "supabase-admin-1",
                     "organization_id": "org-1",
                     "role": "admin",
                     "display_name": "Sam Supervisor",
                     "email": "sam@example.com",
                 },
             ],
+        ),
+        supabase=SupabaseConfig(
+            project_url="https://supabase.test",
+            anon_key="anon-test",
+            service_role_key="service-role-test",
+            jwt_issuer="https://supabase.test/auth/v1",
+            jwt_audience="authenticated",
+            mobile_redirect_scheme="mtc://auth/callback",
+            web_redirect_url="http://localhost:5173/auth/callback",
         ),
         text_encoder=TextEncoderConfig(backend="mock", embedding_dim=192),
         adapter=AdapterConfig(hidden_dim=192, output_dim=192),
@@ -222,12 +315,15 @@ def triage_service(small_config: AppConfig) -> TriageService:
         object_store=MemoryObjectStore(),
         asset_status={},
     )
-    return TriageService(state)
+    service = TriageService(state)
+    _seed_catalog(service)
+    return service
 
 
 @pytest.fixture
 def client(small_config: AppConfig) -> TestClient:
     app = create_app(small_config)
+    _wire_test_auth(app)
     client = TestClient(app)
     client.headers.update({"Authorization": "Bearer secret-token"})
     return client
@@ -236,16 +332,18 @@ def client(small_config: AppConfig) -> TestClient:
 @pytest.fixture
 def technician_client(small_config: AppConfig) -> TestClient:
     app = create_app(small_config)
+    _wire_test_auth(app)
     client = TestClient(app)
-    client.headers.update({"Authorization": "Bearer technician-token"})
+    client.headers.update({"Authorization": "Bearer supabase-tech-token"})
     return client
 
 
 @pytest.fixture
 def admin_client(small_config: AppConfig) -> TestClient:
     app = create_app(small_config)
+    _wire_test_auth(app)
     client = TestClient(app)
-    client.headers.update({"Authorization": "Bearer admin-token"})
+    client.headers.update({"Authorization": "Bearer supabase-admin-token"})
     return client
 
 

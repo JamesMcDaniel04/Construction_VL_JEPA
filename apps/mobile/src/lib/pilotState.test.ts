@@ -12,8 +12,6 @@ describe("pilotState", () => {
       {
         siteId: "",
         assetId: "",
-        panelFamily: "family-a",
-        panelId: "",
         question: "",
         operatorContext: "",
         expectedStateLabel: "",
@@ -22,7 +20,6 @@ describe("pilotState", () => {
       JSON.stringify({ siteId: "site-1", pendingCaseId: "case-123" }),
     );
     expect(result.siteId).toBe("site-1");
-    expect(result.panelFamily).toBe("family-a");
     expect(result.pendingCaseId).toBe("case-123");
   });
 
@@ -31,8 +28,6 @@ describe("pilotState", () => {
       {
         siteId: "seed",
         assetId: "",
-        panelFamily: "family-a",
-        panelId: "",
         question: "",
         operatorContext: "",
         expectedStateLabel: "",

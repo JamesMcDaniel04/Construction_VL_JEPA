@@ -56,11 +56,18 @@ async def invite_pilot_user(
         )
     response = cast(
         PilotUserInviteResponse,
-        request.app.state.service.invite_pilot_user(
-            invite,
-            invited_by_user_id=cast(str, identity["user_id"] or identity["principal"]),
-        ),
+        None,
     )
+    try:
+        response = cast(
+            PilotUserInviteResponse,
+            request.app.state.service.invite_pilot_user(
+                invite,
+                invited_by_user_id=cast(str, identity["user_id"] or identity["principal"]),
+            ),
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     refresh = getattr(request.app.state, "refresh_pilot_user_lookup", None)
     if callable(refresh):
         refresh()

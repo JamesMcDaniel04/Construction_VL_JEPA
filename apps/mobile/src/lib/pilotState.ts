@@ -1,8 +1,6 @@
 export type DraftCase = {
   siteId: string;
   assetId: string;
-  panelFamily: string;
-  panelId: string;
   question: string;
   operatorContext: string;
   expectedStateLabel: string;

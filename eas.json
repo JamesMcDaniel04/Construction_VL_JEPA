@@ -1,0 +1,30 @@
+{
+  "cli": {
+    "version": ">= 16.0.0"
+  },
+  "build": {
+    "pilot-ios": {
+      "distribution": "internal",
+      "channel": "pilot-internal",
+      "ios": {
+        "simulator": false
+      },
+      "env": {
+        "EXPO_PUBLIC_MTC_API_BASE_URL": "https://api.example.com",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://your-project.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "replace-me",
+        "EXPO_PUBLIC_SUPABASE_MOBILE_REDIRECT_URL": "mtc://auth/callback"
+      }
+    },
+    "pilot-android": {
+      "distribution": "internal",
+      "channel": "pilot-internal",
+      "env": {
+        "EXPO_PUBLIC_MTC_API_BASE_URL": "https://api.example.com",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://your-project.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "replace-me",
+        "EXPO_PUBLIC_SUPABASE_MOBILE_REDIRECT_URL": "mtc://auth/callback"
+      }
+    }
+  }
+}

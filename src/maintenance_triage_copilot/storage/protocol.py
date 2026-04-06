@@ -5,11 +5,13 @@ from __future__ import annotations
 from typing import Protocol
 
 from maintenance_triage_copilot.domain.models import (
+    AssetRecord,
     CorpusDocument,
     IncidentRecord,
     MediaAssetRecord,
     PilotUser,
     ReferenceState,
+    SiteRecord,
     TriageAuditRecord,
     TriageCase,
     TriageResponse,
@@ -43,7 +45,38 @@ class MetadataStore(Protocol):
 
     def get_pilot_user(self, user_id: str) -> PilotUser | None: ...
 
+    def get_pilot_user_by_email(self, email: str) -> PilotUser | None: ...
+
     def list_pilot_users(self, limit: int, offset: int) -> list[PilotUser]: ...
+
+    def add_site(self, site: SiteRecord) -> None: ...
+
+    def get_site(self, site_id: str) -> SiteRecord | None: ...
+
+    def list_sites(
+        self,
+        limit: int,
+        offset: int,
+        *,
+        organization_id: str | None = None,
+        query: str | None = None,
+        active_only: bool = False,
+    ) -> list[SiteRecord]: ...
+
+    def add_asset_catalog_record(self, asset: AssetRecord) -> None: ...
+
+    def get_asset_catalog_record(self, asset_id: str) -> AssetRecord | None: ...
+
+    def list_asset_catalog_records(
+        self,
+        limit: int,
+        offset: int,
+        *,
+        organization_id: str | None = None,
+        site_id: str | None = None,
+        query: str | None = None,
+        active_only: bool = False,
+    ) -> list[AssetRecord]: ...
 
     def add_media_asset(self, asset: MediaAssetRecord) -> None: ...
 

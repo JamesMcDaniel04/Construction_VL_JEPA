@@ -10,12 +10,35 @@
       "**/*"
     ],
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.maintenance.triagecopilot",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Capture electrical-panel photos and short clips for technician triage.",
+        "NSPhotoLibraryUsageDescription": "Attach panel photos and short clips to maintenance triage cases."
+      }
     },
     "android": {
+      "package": "com.maintenance.triagecopilot",
       "adaptiveIcon": {
         "backgroundColor": "#0F1B22"
-      }
+      },
+      "permissions": [
+        "CAMERA",
+        "READ_MEDIA_IMAGES",
+        "READ_MEDIA_VIDEO"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Allow Maintenance Triage Copilot to capture panel photos and short clips.",
+          "photosPermission": "Allow Maintenance Triage Copilot to attach panel photos and short clips."
+        }
+      ]
+    ],
+    "extra": {
+      "pilotChannel": "pilot-internal"
     }
   }
 }

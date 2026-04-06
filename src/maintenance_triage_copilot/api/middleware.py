@@ -8,7 +8,6 @@ from uuid import uuid4
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 
-from maintenance_triage_copilot.api.security import bearer_token_sha256
 from maintenance_triage_copilot.domain.models import UserRole
 from maintenance_triage_copilot.telemetry import (
     current_trace_id,
@@ -23,7 +22,7 @@ _AUTH_EXEMPT_PATHS = {"/system/health"}
 
 
 class BearerAuthMiddleware(BaseHTTPMiddleware):
-    """Require bearer auth for service tokens and invited pilot users."""
+    """Require bearer auth for service tokens and Supabase-authenticated pilot users."""
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         if request.url.path in _AUTH_EXEMPT_PATHS:
@@ -33,6 +32,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             request.state.user_id = "healthcheck"
             request.state.organization_id = None
             request.state.display_name = "healthcheck"
+            request.state.email = None
             return await call_next(request)
 
         service_lookup: dict[str, str] = getattr(request.app.state, "service_token_lookup", {})
@@ -45,6 +45,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             request.state.user_id = None
             request.state.organization_id = None
             request.state.display_name = "anonymous"
+            request.state.email = None
             return await call_next(request)
 
         header = request.headers.get("Authorization", "")
@@ -58,7 +59,26 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
 
         token = header.removeprefix("Bearer ").strip()
         principal = service_lookup.get(token)
-        pilot_user = pilot_lookup.get(bearer_token_sha256(token))
+        pilot_user = None
+        if principal is None:
+            claims = None
+            verifier = getattr(request.app.state, "human_token_verifier", None)
+            if callable(verifier):
+                claims = verifier(token)
+            else:
+                auth_provider = getattr(request.app.state, "supabase_auth", None)
+                if auth_provider is not None and getattr(
+                    auth_provider,
+                    "configured_for_human_auth",
+                    lambda: False,
+                )():
+                    try:
+                        claims = auth_provider.verify_access_token(token)
+                    except Exception:
+                        claims = None
+            if claims is not None:
+                pilot_user = pilot_lookup.get(claims.user_id)
+
         if principal is None and pilot_user is None:
             record_auth_failure(request.url.path)
             return Response(
@@ -74,6 +94,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             request.state.user_id = pilot_user.user_id
             request.state.organization_id = pilot_user.organization_id
             request.state.display_name = pilot_user.display_name
+            request.state.email = pilot_user.email
         else:
             assert principal is not None
             request.state.principal = principal
@@ -82,6 +103,7 @@ class BearerAuthMiddleware(BaseHTTPMiddleware):
             request.state.user_id = principal
             request.state.organization_id = None
             request.state.display_name = principal
+            request.state.email = None
         return await call_next(request)
 
 
